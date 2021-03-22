@@ -24,7 +24,9 @@ import subprocess
 
 from convert2rhel.systeminfo import system_info
 from convert2rhel.utils import run_subprocess
-
+from convert2rhel.pkghandler import call_yum_cmd
+from convert2rhel import utils
+from convert2rhel import grub
 
 logger = logging.getLogger(__name__)
 
@@ -40,17 +42,16 @@ def perform_pre_checks():
 
 
 def check_uefi():
-    """Inhibit the conversion when UEFI detected."""
+    """Inhibit the conversion when we are not able to handle UEFI."""
     logger.task("Prepare: Checking the firmware interface type")
-    if os.path.exists("/sys/firmware/efi"):
+    if not os.path.exists("/sys/firmware/efi"):
         # NOTE(pstodulk): the check doesn't have to be valid for hybrid boot
         # (e.g. AWS, Azure, OSP, ..)
-        logger.critical(
-            "Conversion of UEFI systems is currently not supported, see"
-            " https://bugzilla.redhat.com/show_bug.cgi?id=1898314"
-            " for more information."
-        )
-    logger.debug("Converting BIOS system")
+        logger.debug("BIOS detected")
+        return
+    logger.debug("UEFI detected.")
+    # TODO(pstodulk): check the default boot points to expected EFI binary (warning)
+    # TODO(pstodulk): check the default boot points to expected directory (OSP problems)
 
 
 def check_tainted_kmods():

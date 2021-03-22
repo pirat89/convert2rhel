@@ -22,6 +22,7 @@ import sys
 from convert2rhel import (
     cert,
     checks,
+    grub,
     logger,
     pkghandler,
     redhatrelease,
@@ -214,6 +215,9 @@ def post_ponr_conversion():
     pkghandler.replace_non_red_hat_packages()
     loggerinst.task("Convert: List remaining non-Red Hat packages")
     pkghandler.list_non_red_hat_pkgs_left()
+    if grub.is_uefi():
+        loggerinst.task("Convert: Configure the bootloader")
+        grub.post_ponr_set_efi_configuration()
     return
 
 
