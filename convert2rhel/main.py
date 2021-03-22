@@ -22,6 +22,7 @@ import sys
 from convert2rhel import (
     cert,
     checks,
+    grub,
     logger,
     pkghandler,
     redhatrelease,
@@ -99,6 +100,9 @@ def main():
 
         loggerinst.task("Final: rpm files modified by the conversion")
         systeminfo.system_info.modified_rpm_files_diff()
+
+        loggerinst.task("Final: Configure the bootloader")
+        grub.post_ponr_set_efi_configuration()
 
         # restart system if required
         utils.restart_system()
@@ -214,6 +218,9 @@ def post_ponr_conversion():
     pkghandler.replace_non_red_hat_packages()
     loggerinst.task("Convert: List remaining non-Red Hat packages")
     pkghandler.list_non_red_hat_pkgs_left()
+    if grub.is_efi():
+        loggerinst.task("Convert: Configure the bootloader")
+        grub.post_ponr_set_efi_configuration()
     return
 
 
