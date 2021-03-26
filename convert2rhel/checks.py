@@ -46,12 +46,11 @@ def check_uefi():
     logger.task("Prepare: Checking the firmware interface type")
     if not os.path.exists("/sys/firmware/efi"):
         # NOTE(pstodulk): the check doesn't have to be valid for hybrid boot
-        # (e.g. AWS, Azure, OSP, ..)
+        # (e.g. AWS, Azure, ..)
         logger.debug("BIOS detected")
         return
     logger.debug("UEFI detected.")
     # TODO(pstodulk): check the default boot points to expected EFI binary (warning)
-    # TODO(pstodulk): check the default boot points to expected directory (OSP problems)
 
 
 def check_tainted_kmods():

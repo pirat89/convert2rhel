@@ -101,6 +101,9 @@ def main():
         loggerinst.task("Final: rpm files modified by the conversion")
         systeminfo.system_info.modified_rpm_files_diff()
 
+        loggerinst.task("Final: Configure the bootloader")
+        grub.post_ponr_set_efi_configuration()
+
         # restart system if required
         utils.restart_system()
 
