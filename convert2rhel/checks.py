@@ -44,13 +44,34 @@ def perform_pre_checks():
 def check_uefi():
     """Inhibit the conversion when we are not able to handle UEFI."""
     logger.task("Prepare: Checking the firmware interface type")
-    if not os.path.exists("/sys/firmware/efi"):
+    if not grub.is_uefi():
         # NOTE(pstodulk): the check doesn't have to be valid for hybrid boot
         # (e.g. AWS, Azure, ..)
         logger.debug("BIOS detected")
         return
     logger.debug("UEFI detected.")
-    # TODO(pstodulk): check the default boot points to expected EFI binary (warning)
+    if not os.path.exists("/usr/sbin/efibootmgr"):
+        logger.critical("The UEFI has been detected but efibootmgr is not installed.")
+    if grub.is_secure_boot():
+        # NOTE: need to be tested yet. So let's inhibit the conversion for now
+        # until we are sure it's safe...
+        logger.debug("Secure boot detected.")
+        logger.critical("The conversion with secure boot is currently not supported.")
+
+    # Load the data about the bootloader. Currently data is not used, but it's
+    # good check we can obtain all required data after the PONR. Better to
+    # stop now than later.
+    try:
+        grub.EFIBootInfo()
+    except grub.BootloaderError as e:
+        # NOTE(pstodulk): maybe just print of the error msg could be enough..
+        logger.critical(
+            "Cannot check the booloader configuration: %s" % e.message
+        )
+    # TODO(pstodulk): check the default boot points to expected EFI binary
+    # and log warning if not.
+    # TODO(pstodulk): print warning when multiple orig. EFI entries points
+    # to the original system (e.g. into the centos directory..)
 
 
 def check_tainted_kmods():
