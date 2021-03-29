@@ -27,11 +27,20 @@ logger = logging.getLogger(__name__)
 EFI_MOUNTPOINT = "/boot/efi/"
 """The path to the required mountpoint for ESP."""
 
+CENTOS_EFIDIR_CANONICAL_PATH = os.path.join(EFI_MOUNTPOINT, "EFI/centos/")
+"""The canonical path to the default efi directory on for CentOS Linux system."""
+
 RHEL_EFIDIR_CANONICAL_PATH = os.path.join(EFI_MOUNTPOINT, "EFI/redhat/")
 """The canonical path to the default efi directory on for RHEL system."""
 
-RHEL_EFIBIN_CANONICAL_DEFAULT_PATH = os.path.join(RHEL_EFIDIR_CANONICAL_PATH, "shimx64.efi")
-"""The canonical path to the default RHEL EFI binary."""
+# TODO(pstodulk): following constants are valid only for x86_64 arch
+DEFAULT_INSTALLED_EFIBIN_FILENAMES = ("shimx64.efi", "grubx64.efi")
+"""Filenames of the EFI binary files that could be by default instaled on the system.
+
+Sorted by the recommended preferences. The first one is most preferred, but it
+is provided by the shim rpm which does not have to be installed on the system.
+In case it's missing, another files should be used instead.
+"""
 
 
 class BootloaderError(Exception):
@@ -61,7 +70,7 @@ class InvalidPathEFI(BootloaderError):
 
 def is_uefi():
     """Return True if UEFI is used."""
-    return True if os.path.exists("/sys/firmware/efi") else False
+    return os.path.exists("/sys/firmware/efi")
 
 
 def is_secure_boot():
@@ -95,7 +104,9 @@ def _get_partition(directory):
 
     Raise BootloaderError if the partition cannot be detected.
     """
-    stdout, ecode = utils.run_subprocess("/usr/sbin/grub2-probe --target=device /boot", print_output=False)
+    stdout, ecode = utils.run_subprocess(
+        "/usr/sbin/grub2-probe --target=device %s" % directory, print_output=False
+    )
     if ecode or not stdout:
         logger.error("grub2-probe ended with non-zero exit code.\n%s" % stdout)
         raise BootloaderError("Cannot get device information for %s." % directory)
@@ -117,7 +128,7 @@ def get_efi_partition():
     Raise UnsupportedEFIConfiguration when ESP is not mounted where expected.
     Raise BootloaderError if the partition cannot be obtained from GRUB.
     """
-    if not is_uefi:
+    if not is_uefi():
         raise NotUsedEFI("Cannot get ESP when BIOS is used.")
     if not os.path.exists(EFI_MOUNTPOINT) or not os.path.ismount(EFI_MOUNTPOINT):
         raise UnsupportedEFIConfiguration(
@@ -145,11 +156,11 @@ def _get_blk_device(device):
         logger.error("Cannot get the block device for '%s'." % device)
         logger.debug("lsblk ... output:\n-----\n%s\n-----" % stdout)
         raise BootloaderError("Cannot get the block device")
-        
+
     return stdout.strip().split("\n")[-1].strip()
 
 
-def get_device_number(device):
+def _get_device_number(device):
     """Return dict with 'major' and 'minor' number of specified device/partition.
 
     Raise ValueError on empty / None device
@@ -204,6 +215,17 @@ class EFIBootLoader(object):
             PciRoot(0x0)/Pci(0x2,0x3)/Pci(0x0,0x0)N.....YM....R,Y.
         """
 
+    def __eq__(self, other):
+        return all([
+            self.boot_number == other.boot_number,
+            self.label == other.label,
+            self.active == other.active,
+            self.efi_bin_source == other.efi_bin_source,
+        ])
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
     def is_referring_to_file(self):
         """Return True when the boot source is a file.
 
@@ -230,7 +252,7 @@ class EFIBootLoader(object):
         match = re.search(r"/File\((?P<path>\\.*)\)$", self.efi_bin_source)
         if not match:
             raise BootloaderError("Cannot get the path to EFI binary for boot number: %s" % self.boot_number)
-        return EFIBootLoader._efi_path_to_canonical(match.groups("path"))
+        return EFIBootLoader._efi_path_to_canonical(match.groups("path")[0])
 
 
 class EFIBootInfo(object):
@@ -256,7 +278,7 @@ class EFIBootInfo(object):
         self.boot_order = None
         """The tuple of the EFI boot loader entries in the boot order."""
         self.entries = {}
-        """The EFI boot loader entries {'boot_num': EFIBootLoader}"""
+        """The EFI boot loader entries {'boot_number': EFIBootLoader}"""
         self.efi_partition = get_efi_partition()
         """The EFI System Partition (ESP)"""
 
@@ -344,10 +366,14 @@ def _copy_grub_files():
     """
     if systeminfo.system_info.id != "centos":
         logger.debug("Skipping the copy of grub files - related only for centos.")
-        return
+        return True
 
+    # TODO(pstodulk): check behaviour for efibin from a different dir or with
+    # a different name for the possibility of the different grub content...
+    # E.g. if  the efibin is located in different directory, are these two files
+    # valid???
     logger.info("Copy the GRUB2 configuration files to the new EFI directory.")
-    src_efidir = os.path.join(EFI_MOUNTPOINT ,"EFI/centos/")
+    src_efidir = CENTOS_EFIDIR_CANONICAL_PATH
     flag_ok = True
     required_files = ["grubenv", "grub.cfg"]
     all_files = required_files + ["user.cfg"]
@@ -375,44 +401,36 @@ def _copy_grub_files():
     return flag_ok
 
 
-def _replace_efi_boot_entry(efibootinfo):
-    """Replace the current bootloader entry with the RHEL one.
-
-    The current EFI bootloader entry points still to the original path
-    (which could be invalid already) and label contains still the original
-    OS name. The new entry will point to expected path and will contain
-    the expected RHEL label.
-    """
+def _create_new_entry(efibootinfo):
     # This should work fine, unless people would like to use something "custom".
     label = "Red Hat Enterprise Linux %s" % str(systeminfo.system_info.version.major)
     logger.info("Create the '%s' EFI bootloader entry." % label)
     try:
-        dev_number = get_device_number(efibootinfo.efi_partition)
-        blk_dev = get_grub_device
+        dev_number = _get_device_number(efibootinfo.efi_partition)
+        blk_dev = get_grub_device()
     except BootloaderError:
         raise BootloaderError("Cannot get required information about the EFI partition.")
     logger.debug("Block device: %s" % str(blk_dev))
     logger.debug("ESP device number: %s" % str(dev_number))
 
-    efi_path = canonical_path_to_efi_format(RHEL_EFIBIN_CANONICAL_DEFAULT_PATH)
+    efi_path = None
+    for filename in DEFAULT_INSTALLED_EFIBIN_FILENAMES:
+        tmp_efi_path = os.path.join(RHEL_EFIDIR_CANONICAL_PATH, filename)
+        if os.path.exists(tmp_efi_path):
+            efi_path = canonical_path_to_efi_format(tmp_efi_path)
+            logger.debug("The new EFI binary: %s" % tmp_efi_path)
+            logger.debug("The new EFI binary [efi format]: %s" % efi_path)
+            break
+    if not efi_path:
+        BootloaderError("Cannot detect any RHEL EFI binary file.")
+
     cmd_fmt = "/usr/sbin/efibootmgr -c -d %s -p %s -l '%s' -L '%s'"
     cmd_params = (blk_dev, dev_number["minor"], efi_path, label)
 
     stdout, ecode = utils.run_subprocess(cmd_fmt % cmd_params, print_output=False)
     if ecode:
         logger.debug("efibootmgr output:\n-----\n%s\n-----" % stdout)
-        raise BootloaderError(
-            "Cannot create the new EFI bootloader entry for RHEL."
-        )
-    # remove the original EFI bootloader
-    # TODO(pstodulk): do not remove the original entry if do not point to
-    # a default /efidir/efibin...
-    logger.info("Remove the original EFI bootloader entry.")
-    _, ecode = utils.run_subprocess("/usr/sbin/efibootmgr -Bb %s" % efibootinfo.current_boot, print_output=False)
-    if ecode:
-        # this is not a critical issue; the entry will be even removed
-        # automatically if it is invalid (points to non-existing efibin)
-        logger.warning("Cannot remove the original EFI bootloader entry.")
+        raise BootloaderError("Cannot create the new EFI bootloader entry for RHEL.")
 
     # check that our entry really exists, if yes, it will be default for sure
     logger.info("Check the new EFI bootloader.")
@@ -423,6 +441,88 @@ def _replace_efi_boot_entry(efibootinfo):
             new_boot_entry = i
     if not new_boot_entry:
         raise BootloaderError("Cannot get the boot number of the new EFI bootloader entry.")
+
+
+def _remove_current_boot_entry(efibootinfo_orig):
+    """Remove the current (original) boot entry if ...
+
+    if:
+        - the referred EFI binary file doesn't exist anymore and originally
+          was located in the default directory for the original OS
+        - the referred EFI binary file is same as the current default one
+
+    The conditions could be more complicated if algorithms in this module
+    are changed. Additional checks are implemented that could prevent the
+    current boot from the removal.
+
+    The function is expected to be called after the new RHEL entry is created.
+    but expects to get EFIBootInfo before the new bootloader entry is created.
+    """
+    efibootinfo_new = EFIBootInfo()
+    # the following checks are just preventive. the warnings should not appear,
+    # unless someone changes the code in future providing a bug
+    orig_boot = efibootinfo_new.entries.get(efibootinfo_orig.current_boot, None)
+    if not orig_boot:
+        logger.warning(
+            "The original default EFI bootloader entry %s has been removed already."
+            % orig_boot.boot_number
+        )
+        return
+    if orig_boot != efibootinfo_orig.entries[orig_boot.boot_number]:
+        logger.warning(
+            "The EFI bootloader entry %s has been modified. Skipping the removal."
+            % orig_boot.boot_number
+        )
+        return
+    if not orig_boot.is_referring_to_file():
+        logger.warning(
+            "The EFI bootloader entry %s is not referring to an EFI binary file."
+            " Skipping the removal."
+            % orig_boot.boot_number
+        )
+        return
+
+    efibin_path = orig_boot.get_canonical_path()
+    if not efibin_path:
+        # this is rather a bug of this modules, as this should not happen
+        logger.warning(
+            "Skipping the removal of the original default boot '%s':"
+            " Cannot get canonical path to the EFI binary file."
+            % orig_boot.boot_number
+        )
+        return
+
+    # the following checks could be hit
+    efibin_path_new = efibootinfo_new.entries[efibootinfo_new.boot_order[0]].get_canonical_path()
+    if os.path.exists(efibin_path) and efibin_path != efibin_path_new:
+        logger.warning(
+            "Skipping the removal of the original default boot '%s':"
+            " The referred file still exists: %s"
+            % (orig_boot.boot_number, efibin_path)
+        )
+        return
+    logger.info("Remove the original EFI boot entry '%s'." % orig_boot.boot_number)
+    _, ecode = utils.run_subprocess("/usr/sbin/efibootmgr -Bb %s" % orig_boot.boot_number, print_output=False)
+    if ecode:
+        # this is not a critical issue; the entry will be even removed
+        # automatically if it is invalid (points to non-existing efibin)
+        logger.warning("The removal of the original EFI bootloader entry has failed.")
+
+
+def _replace_efi_boot_entry(efibootinfo):
+    """Replace the current EFI bootloader entry with the RHEL one.
+
+    The current EFI bootloader entry could be invalid or missleading. It's
+    expected the new bootloader entry will refer to one of standard EFI binary
+    files, provided by Red Hat, inside RHEL_EFIDIR_CANONICAL_PATH.
+    The new EFI bootloader entry is always created / registered and set
+    set as default.
+
+    The current (original) EFI bootloader entry is removed under some conditions
+    (see _remove_current_boot_entry() for more info).
+    """
+    _create_new_entry(efibootinfo)
+    _remove_current_boot_entry(efibootinfo)
 
 
 def _remove_efi_centos():
@@ -437,8 +537,8 @@ def _remove_efi_centos():
     if systeminfo.system_info.id != "centos":
         # nothing to do
         return
-    # TODO: remove original centos directory if no efi bin is present
-    logger.warning(
+    # TODO: remove the original centos directory if no efi bin is present
+    logger.info(
         "The original /boot/efi/EFI/centos directory is kept."
         " Remove the directory manually after you check it's not needed"
         " anymore."
@@ -464,16 +564,20 @@ def post_ponr_set_efi_configuration():
         logger.info("The BIOS detected. Nothing to do.")
         return
 
-    if not os.path.exists(RHEL_EFIBIN_CANONICAL_DEFAULT_PATH):
-        # TODO: this could happen only if the shim package is not installed,
-        # but it doesn't have to. In such a case the grubx64.efi should be used
-        # (which is always present)
-        _log_critical_error("The expected EFI binary does not exist: %s" % RHEL_EFIBIN_CANONICAL_DEFAULT_PATH)
+    new_default_efibin = None
+    for filename in DEFAULT_INSTALLED_EFIBIN_FILENAMES:
+        efi_path = os.path.join(RHEL_EFIDIR_CANONICAL_PATH, filename)
+        if os.path.exists(efi_path):
+            logger.info("The new expected EFI binary found: %s" % efi_path)
+            new_default_efibin = efi_path
+            break
+        logger.debug("The %s EFI binary not found. Check the next..." % efi_path)
+    if not new_default_efibin:
+        _log_critical_error("Any of expected RHEL EFI binaries do not exist.")
     if not os.path.exists("/usr/sbin/efibootmgr"):
         _log_critical_error("The /usr/sbin/efibootmgr utility is not installed.")
 
-
-    # related just for centos. check inside
+    # related just for centos. checks inside
     if not _copy_grub_files():
         _log_critical_error("Some GRUB files have not been copied to /boot/efi/EFI/redhat")
     _remove_efi_centos()
@@ -488,6 +592,6 @@ def post_ponr_set_efi_configuration():
         # TODO(pstodulk): originally we discussed it will be better to not use
         # the critical log, for the possibility the additional post converstion
         # actions could exist. However, I cannot come up with a good solution
-        # without putting additional logic into the main(). So as currently 
+        # without putting additional logic into the main(). So as currently
         # this is the last action that could fail, I am just using this solution.
         _log_critical_error(e.message)
