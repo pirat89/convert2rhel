@@ -52,6 +52,8 @@ def check_uefi():
     logger.debug("UEFI detected.")
     if not os.path.exists("/usr/sbin/efibootmgr"):
         logger.critical("The UEFI has been detected but efibootmgr is not installed.")
+    if system_info.arch != "x86_64":
+        logger.critical("The conversion with UEFI is now handled only on the intel architecture.")
     if grub.is_secure_boot():
         # NOTE: need to be tested yet. So let's inhibit the conversion for now
         # until we are sure it's safe...
@@ -62,16 +64,28 @@ def check_uefi():
     # good check we can obtain all required data after the PONR. Better to
     # stop now than later.
     try:
-        grub.EFIBootInfo()
+        efiboot_info = grub.EFIBootInfo()
     except grub.BootloaderError as e:
         # NOTE(pstodulk): maybe just print of the error msg could be enough..
         logger.critical(
             "Cannot check the booloader configuration: %s" % e.message
         )
-    # TODO(pstodulk): check the default boot points to expected EFI binary
-    # and log warning if not.
+
+    if not efiboot_info.entries[efiboot_info.current_boot].is_referring_to_file():
+        # NOTE(pstodulk): Or critical? I am not sure how much this is even valid
+        # and not sure what could be consequences after the conversion, as the
+        # new EFI bootloader entry is created referring to a RHEL efi bin.
+        # So keeping warning for now.
+        logger.warning(
+            "The current EFI bootloader '%s' is not referring to any binary EFI"
+            " file located on ESP."
+            % efiboot_info.current_boot
+        )
     # TODO(pstodulk): print warning when multiple orig. EFI entries points
-    # to the original system (e.g. into the centos directory..)
+    # to the original system (e.g. into the centos directory..). The point is
+    # that only the current efi bootloader entry is handled.
+    # If e.g. on CentOS Linux, other entries with CentOS labels could be
+    # invalid (or at least missleading) as the OS will be replaced by RHEL
 
 
 def check_tainted_kmods():
