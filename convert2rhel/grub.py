@@ -24,7 +24,10 @@ from convert2rhel import systeminfo, utils
 
 logger = logging.getLogger(__name__)
 
-RHEL_EFIDIR_CANONICAL_PATH = "/boot/efi/EFI/redhat/"
+EFI_MOUNTPOINT = "/boot/efi/"
+"""The path to the required mountpoint for ESP."""
+
+RHEL_EFIDIR_CANONICAL_PATH = os.path.join(EFI_MOUNTPOINT, "EFI/redhat/")
 """The canonical path to the default efi directory on for RHEL system."""
 
 RHEL_EFIBIN_CANONICAL_DEFAULT_PATH = os.path.join(RHEL_EFIDIR_CANONICAL_PATH, "shimx64.efi")
@@ -116,12 +119,12 @@ def get_efi_partition():
     """
     if not is_uefi:
         raise NotUsedEFI("Cannot get ESP when BIOS is used.")
-    if not os.path.exists("/boot/efi") or not os.path.ismount("/boot/efi"):
+    if not os.path.exists(EFI_MOUNTPOINT) or not os.path.ismount(EFI_MOUNTPOINT):
         raise UnsupportedEFIConfiguration(
             "The EFI has been detected but the ESP is not mounted"
             " in /boot/efi as required."
         )
-    return _get_partition("/boot/efi")
+    return _get_partition(EFI_MOUNTPOINT)
 
 
 def _get_blk_device(device):
@@ -200,6 +203,34 @@ class EFIBootLoader(object):
             HD(1,GPT,28c77f6b-3cd0-4b22-985f-c99903835d79,0x800,0x12c000)/File(\EFI\redhat\shimx64.efi)
             PciRoot(0x0)/Pci(0x2,0x3)/Pci(0x0,0x0)N.....YM....R,Y.
         """
+
+    def is_referring_to_file(self):
+        """Return True when the boot source is a file.
+
+        Some sources could refer e.g. to PXE boot. Return true if the source
+        refers to a file ("ends with /Files(...path...)")
+
+        Does not matter whether the file exists or not.
+        """
+        return "/File(\\" in self.efi_bin_source
+
+    @staticmethod
+    def _efi_path_to_canonical(efi_path):
+        return os.path.join(EFI_MOUNTPOINT, efi_path.replace("\\", "/").lstrip("/"))
+
+
+    def get_canonical_path(self):
+        """Return expected canonical path for the referred EFI bin or None.
+
+        Return None in case the entry is not referring to any EFI bin
+        (e.g. when refers to a PXE boot).
+        """
+        if not self.is_referring_to_file():
+            return None
+        match = re.search(r"/File\((?P<path>\\.*)\)$", self.efi_bin_source)
+        if not match:
+            raise BootloaderError("Cannot get the path to EFI binary for boot number: %s" % self.boot_number)
+        return EFIBootLoader._efi_path_to_canonical(match.groups("path"))
 
 
 class EFIBootInfo(object):
@@ -292,8 +323,9 @@ def canonical_path_to_efi_format(canonical_path):
 
     Raise ValueError on invalid EFI path.
     """
-    if not canonical_path.startswith("/boot/efi"):
+    if not canonical_path.startswith(EFI_MOUNTPOINT):
         raise ValueError("Invalid path to the EFI binary: %s" % canonical_path)
+    # len(EFI_MOUNTPOINT) == 10, but we want to keep the leading "/", so.. 9
     return canonical_path[9:].replace("/", "\\")
 
 
@@ -315,7 +347,7 @@ def _copy_grub_files():
         return
 
     logger.info("Copy the GRUB2 configuration files to the new EFI directory.")
-    src_efidir = "/boot/efi/EFI/centos/"
+    src_efidir = os.path.join(EFI_MOUNTPOINT ,"EFI/centos/")
     flag_ok = True
     required_files = ["grubenv", "grub.cfg"]
     all_files = required_files + ["user.cfg"]
