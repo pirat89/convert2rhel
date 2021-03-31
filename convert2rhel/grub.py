@@ -157,7 +157,7 @@ def _get_blk_device(device):
         logger.debug("lsblk ... output:\n-----\n%s\n-----" % stdout)
         raise BootloaderError("Cannot get the block device")
 
-    return stdout.strip().split("\n")[-1].strip()
+    return stdout.strip().splitlines()[-1].strip()
 
 
 def _get_device_number(device):
@@ -175,7 +175,7 @@ def _get_device_number(device):
     # for partitions the output contains multiple lines (for the partition
     # and all parents till the devices itself). We want maj:min number just
     # for the specified device/partition, so take the first line only
-    majmin = stdout.split("\n")[0].strip().split(":")
+    majmin = stdout.splitlines()[0].strip().split(":")
     return {"major": int(majmin[0]), "minor": int(majmin[1])}
 
 
@@ -291,12 +291,12 @@ class EFIBootInfo(object):
         """Return dict of EFI boot loader entries: {"<boot_number>": EFIBootLoader}"""
         self.entries = {}
         regexp_entry = re.compile(r"^Boot(?P<bootnum>[0-9]+)[\s*]\s*(?P<label>[^\s].*)$")
-        for line in brief_data.split("\n"):
+        for line in brief_data.splitlines():
             match = regexp_entry.match(line)
             if not match:
                 continue
             # find the source in verbose data
-            vline = [i for i in verbose_data.split("\n") if i.strip().startswith(line)][0]
+            vline = [i for i in verbose_data.splitlines() if i.strip().startswith(line)][0]
             efi_bin_source = vline[len(line):].strip()
 
             self.entries[match.group("bootnum")] = EFIBootLoader(
@@ -311,7 +311,7 @@ class EFIBootInfo(object):
 
     def _parse_current_boot(self, data):
         # e.g.: BootCurrent: 0002
-        for line in data.split("\n"):
+        for line in data.splitlines():
             if line.startswith("BootCurrent:"):
                 self.current_boot = line.split(":")[1].strip()
                 return
@@ -319,7 +319,7 @@ class EFIBootInfo(object):
 
     def _parse_next_boot(self, data):
         # e.g.:  BootCurrent: 0002
-        for line in data.split("\n"):
+        for line in data.splitlines():
             if line.startswith("BootNext:"):
                 self.next_boot = line.split(":")[1].strip()
                 return
@@ -327,7 +327,7 @@ class EFIBootInfo(object):
 
     def _parse_boot_order(self, data):
         # e.g.:  BootOrder: 0001,0002,0000,0003
-        for line in data.split("\n"):
+        for line in data.splitlines():
             if line.startswith("BootOrder:"):
                 self.boot_order = tuple(line.split(":")[1].strip().split(","))
                 return
