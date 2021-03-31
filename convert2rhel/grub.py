@@ -75,7 +75,7 @@ def is_uefi():
 
 def is_secure_boot():
     """Return True if the secure boot is enabled."""
-    if not is_uefi:
+    if not is_uefi():
         return False
     try:
         stdout, ecode = utils.run_subprocess("mokutil --sb-state", print_output=False)
