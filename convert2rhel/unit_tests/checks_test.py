@@ -529,6 +529,7 @@ class TestEFIChecks(unittest.TestCase):
 
     @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
+    @unit_tests.mock(checks.system_info, "arch", "x86_64")
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: not x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
@@ -536,7 +537,17 @@ class TestEFIChecks(unittest.TestCase):
         self._check_efi_critical("Install efibootmgr to continue converting EFI system.")
 
     @unit_tests.mock(grub, "is_efi", lambda: True)
+    @unit_tests.mock(grub, "is_secure_boot", lambda: False)
+    @unit_tests.mock(checks.system_info, "arch", "aarch64")
+    @unit_tests.mock(checks, "logger", GetLoggerMocked())
+    @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
+    @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
+    def test_check_efi_efi_detected_non_intel(self):
+        self._check_efi_critical("Only x86_64 systems are supported for EFI conversions.")
+
+    @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: True)
+    @unit_tests.mock(checks.system_info, "arch", "x86_64")
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
@@ -546,6 +557,7 @@ class TestEFIChecks(unittest.TestCase):
 
     @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
+    @unit_tests.mock(checks.system_info, "arch", "x86_64")
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
@@ -554,6 +566,7 @@ class TestEFIChecks(unittest.TestCase):
 
     @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
+    @unit_tests.mock(checks.system_info, "arch", "x86_64")
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(current_boot="0002"))
@@ -568,6 +581,7 @@ class TestEFIChecks(unittest.TestCase):
     
     @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
+    @unit_tests.mock(checks.system_info, "arch", "x86_64")
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked())

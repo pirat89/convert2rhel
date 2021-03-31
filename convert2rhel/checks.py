@@ -53,7 +53,7 @@ def check_efi():
     if not os.path.exists("/usr/sbin/efibootmgr"):
         logger.critical("Install efibootmgr to continue converting EFI system.")
     if system_info.arch != "x86_64":
-        logger.critical("The conversion with EFI is now handled only on the intel architecture.")
+        logger.critical("Only x86_64 systems are supported for EFI conversions.")
     if grub.is_secure_boot():
         # NOTE: need to be tested yet. So let's inhibit the conversion for now
         # until we are sure it's safe...
