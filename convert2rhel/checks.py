@@ -50,6 +50,8 @@ def check_efi():
         logger.debug("BIOS detected.")
         return
     logger.debug("EFI detected.")
+    if system_info.version.major == 6:
+        logger.critical("The conversion with EFI is supported only for systems from major version 7.")
     if not os.path.exists("/usr/sbin/efibootmgr"):
         logger.critical("Install efibootmgr to continue converting EFI system.")
     if system_info.arch != "x86_64":
