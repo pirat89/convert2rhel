@@ -466,20 +466,20 @@ class EFIBootInfoMocked():
 
     _ENTRIES = {
         "0001": grub.EFIBootLoader(
-                    boot_number="0001", 
-                    label="Centos Linux", 
-                    active=True, 
+                    boot_number="0001",
+                    label="Centos Linux",
+                    active=True,
                     efi_bin_source="HD(1,GPT,28c77f6b-3cd0-4b22-985f-c99903835d79,0x800,0x12c000)/File(\\EFI\\centos\\shimx64.efi)",
         ),
         "0002": grub.EFIBootLoader(
-                    boot_number="0002", 
-                    label="Foo label", 
-                    active=True, 
+                    boot_number="0002",
+                    label="Foo label",
+                    active=True,
                     efi_bin_source="FvVol(7cb8bdc9-f8eb-4f34-aaea-3ee4af6516a1)/FvFile(462caa21-7614-4503-836e-8ab6f4662331)",
         ),
     }
 
-    def __init__(self, 
+    def __init__(self,
                  current_boot="0001",
                  next_boot=None,
                  boot_order=("0001", "0002"),
@@ -590,12 +590,12 @@ class TestEFIChecks(unittest.TestCase):
     def test_check_efi_efi_detected_nofile_entry(self):
         checks.check_efi()
         self._check_efi_detection_log()
-        warn_msg = ( 
+        warn_msg = (
             "The current EFI bootloader '0002' is not referring to any"
             " binary EFI file located on ESP."
         )
         self.assertTrue(warn_msg in checks.logger.warning_msgs)
-    
+
     @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
     @unit_tests.mock(checks.system_info, "arch", "x86_64")
@@ -606,4 +606,4 @@ class TestEFIChecks(unittest.TestCase):
     def test_check_efi_efi_detected_ok(self):
         checks.check_efi()
         self._check_efi_detection_log()
-        self.assertEqual(len(checks.logger.warning_msgs), 0) 
+        self.assertEqual(len(checks.logger.warning_msgs), 0)
