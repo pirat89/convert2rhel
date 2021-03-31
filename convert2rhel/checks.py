@@ -47,7 +47,7 @@ def check_uefi():
     if not grub.is_uefi():
         # NOTE(pstodulk): the check doesn't have to be valid for hybrid boot
         # (e.g. AWS, Azure, ..)
-        logger.debug("BIOS detected")
+        logger.debug("BIOS detected.")
         return
     logger.debug("UEFI detected.")
     if not os.path.exists("/usr/sbin/efibootmgr"):
