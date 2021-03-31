@@ -89,11 +89,11 @@ def _run_subprocess_side_effect(*stubs):
 
 def test_perform_pre_checks(monkeypatch):
     check_thirdparty_kmods_mock = mock.Mock()
-    check_uefi_mock = mock.Mock()
+    check_efi_mock = mock.Mock()
     monkeypatch.setattr(
         checks,
-        "check_uefi",
-        value=check_uefi_mock,
+        "check_efi",
+        value=check_efi_mock,
     )
     monkeypatch.setattr(
         checks,
@@ -104,7 +104,7 @@ def test_perform_pre_checks(monkeypatch):
     checks.perform_pre_checks()
 
     check_thirdparty_kmods_mock.assert_called_once()
-    check_uefi_mock.assert_called_once()
+    check_efi_mock.assert_called_once()
 
 
 def test_pre_ponr_checks(monkeypatch):
@@ -504,61 +504,61 @@ class EFIBootInfoMocked():
         raise self._exception
 
 
-class TestUEFIChecks(unittest.TestCase):
+class TestEFIChecks(unittest.TestCase):
 
     def _check_efi_detection_log(self, efi_detected=True):
         if efi_detected:
             self.assertFalse("BIOS detected." in checks.logger.debug_msgs)
-            self.assertTrue("UEFI detected." in checks.logger.debug_msgs)
+            self.assertTrue("EFI detected." in checks.logger.debug_msgs)
         else:
             self.assertTrue("BIOS detected." in checks.logger.debug_msgs)
-            self.assertFalse("UEFI detected." in checks.logger.debug_msgs)
+            self.assertFalse("EFI detected." in checks.logger.debug_msgs)
 
-    @unit_tests.mock(grub, "is_uefi", lambda: False)
+    @unit_tests.mock(grub, "is_efi", lambda: False)
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
-    def test_check_uefi_bios_detected(self):
-        checks.check_uefi()
+    def test_check_efi_bios_detected(self):
+        checks.check_efi()
         self.assertFalse(checks.logger.critical_msgs)
         self._check_efi_detection_log(False)
 
     def _check_efi_critical(self, critical_msg):
-        self.assertRaises(SystemExit, checks.check_uefi)
+        self.assertRaises(SystemExit, checks.check_efi)
         self.assertEqual(len(checks.logger.critical_msgs), 1)
         self.assertTrue(critical_msg in checks.logger.critical_msgs)
         self._check_efi_detection_log(True)
 
-    @unit_tests.mock(grub, "is_uefi", lambda: True)
+    @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: not x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
-    def test_check_uefi_efi_detected_without_efibootmgr(self):
-        self._check_efi_critical("The UEFI has been detected but efibootmgr is not installed.")
+    def test_check_efi_efi_detected_without_efibootmgr(self):
+        self._check_efi_critical("Install efibootmgr to continue converting EFI system.")
 
-    @unit_tests.mock(grub, "is_uefi", lambda: True)
+    @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: True)
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
-    def test_check_uefi_efi_detected_secure_boot(self):
+    def test_check_efi_efi_detected_secure_boot(self):
         self._check_efi_critical("The conversion with secure boot is currently not supported.")
         self.assertTrue("Secure boot detected." in checks.logger.debug_msgs)
 
-    @unit_tests.mock(grub, "is_uefi", lambda: True)
+    @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
-    def test_check_uefi_efi_detected_bootloader_error(self):
+    def test_check_efi_efi_detected_bootloader_error(self):
         self._check_efi_critical("Cannot check the booloader configuration: errmsg")
 
-    @unit_tests.mock(grub, "is_uefi", lambda: True)
+    @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(current_boot="0002"))
-    def test_check_uefi_efi_detected_nofile_entry(self):
-        checks.check_uefi()
+    def test_check_efi_efi_detected_nofile_entry(self):
+        checks.check_efi()
         self._check_efi_detection_log()
         warn_msg = ( 
             "The current EFI bootloader '0002' is not referring to any"
@@ -566,12 +566,12 @@ class TestUEFIChecks(unittest.TestCase):
         )
         self.assertTrue(warn_msg in checks.logger.warning_msgs)
     
-    @unit_tests.mock(grub, "is_uefi", lambda: True)
+    @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
     @unit_tests.mock(checks, "logger", GetLoggerMocked())
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked())
-    def test_check_uefi_efi_detected_ok(self):
-        checks.check_uefi()
+    def test_check_efi_efi_detected_ok(self):
+        checks.check_efi()
         self._check_efi_detection_log()
         self.assertEqual(len(checks.logger.warning_msgs), 0) 

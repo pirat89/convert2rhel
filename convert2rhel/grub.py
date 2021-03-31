@@ -68,14 +68,14 @@ class InvalidPathEFI(BootloaderError):
     pass
 
 
-def is_uefi():
-    """Return True if UEFI is used."""
+def is_efi():
+    """Return True if EFI is used."""
     return os.path.exists("/sys/firmware/efi")
 
 
 def is_secure_boot():
     """Return True if the secure boot is enabled."""
-    if not is_uefi():
+    if not is_efi():
         return False
     try:
         stdout, ecode = utils.run_subprocess("mokutil --sb-state", print_output=False)
@@ -124,11 +124,11 @@ def get_boot_partition():
 def get_efi_partition():
     """Return the EFI System Partition (ESP).
 
-    Raise NotUsedEFI if UEFI is not detected.
+    Raise NotUsedEFI if EFI is not detected.
     Raise UnsupportedEFIConfiguration when ESP is not mounted where expected.
     Raise BootloaderError if the partition cannot be obtained from GRUB.
     """
-    if not is_uefi():
+    if not is_efi():
         raise NotUsedEFI("Cannot get ESP when BIOS is used.")
     if not os.path.exists(EFI_MOUNTPOINT) or not os.path.ismount(EFI_MOUNTPOINT):
         raise UnsupportedEFIConfiguration(
@@ -183,13 +183,13 @@ def get_grub_device():
     """Get the block device where GRUB is located.
 
     We assume GRUB is on the same device as /boot (or ESP).
-    Raise UnsupportedEFIConfiguration when UEFI detected but ESP
+    Raise UnsupportedEFIConfiguration when EFI detected but ESP
           has not been discovered.
     Raise BootloaderError if the block device cannot be obtained.
     """
     # in 99% it should not matter to distinguish between /boot and /boot/efi,
     # but seatbelt is better
-    partition = get_efi_partition() if is_uefi() else get_boot_partition()
+    partition = get_efi_partition() if is_efi() else get_boot_partition()
     return _get_blk_device(partition)
 
 
@@ -211,7 +211,7 @@ class EFIBootLoader(object):
 
         It could contain various values, e.g.:
             FvVol(7cb8bdc9-f8eb-4f34-aaea-3ee4af6516a1)/FvFile(462caa21-7614-4503-836e-8ab6f4662331)
-            HD(1,GPT,28c77f6b-3cd0-4b22-985f-c99903835d79,0x800,0x12c000)/File(\EFI\redhat\shimx64.efi)
+            HD(1,GPT,28c77f6b-3cd0-4b22-985f-c99903835d79,0x800,0x12c000)/File(\\EFI\\redhat\\shimx64.efi)
             PciRoot(0x0)/Pci(0x2,0x3)/Pci(0x0,0x0)N.....YM....R,Y.
         """
 
@@ -264,7 +264,7 @@ class EFIBootInfo(object):
     """
 
     def __init__(self):
-        if not is_uefi():
+        if not is_efi():
             raise NotUsedEFI("Cannot collect data about EFI on BIOS system.")
         brief_stdout, ecode = utils.run_subprocess("/usr/sbin/efibootmgr", print_output=False)
         verbose_stdout, ecode2 = utils.run_subprocess("/usr/sbin/efibootmgr -v", print_output=False)
@@ -560,7 +560,7 @@ def post_ponr_set_efi_configuration():
 
     Nothing happens on BIOS.
     """
-    if not is_uefi():
+    if not is_efi():
         logger.info("The BIOS detected. Nothing to do.")
         return
 

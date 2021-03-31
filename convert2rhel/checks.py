@@ -37,23 +37,23 @@ LINK_KMODS_RH_POLICY = "https://access.redhat.com/third-party-software-support"
 
 def perform_pre_checks():
     """Early checks after system facts should be added here."""
-    check_uefi()
+    check_efi()
     check_tainted_kmods()
 
 
-def check_uefi():
-    """Inhibit the conversion when we are not able to handle UEFI."""
+def check_efi():
+    """Inhibit the conversion when we are not able to handle EFI."""
     logger.task("Prepare: Checking the firmware interface type")
-    if not grub.is_uefi():
+    if not grub.is_efi():
         # NOTE(pstodulk): the check doesn't have to be valid for hybrid boot
         # (e.g. AWS, Azure, ..)
         logger.debug("BIOS detected.")
         return
-    logger.debug("UEFI detected.")
+    logger.debug("EFI detected.")
     if not os.path.exists("/usr/sbin/efibootmgr"):
-        logger.critical("The UEFI has been detected but efibootmgr is not installed.")
+        logger.critical("Install efibootmgr to continue converting EFI system.")
     if system_info.arch != "x86_64":
-        logger.critical("The conversion with UEFI is now handled only on the intel architecture.")
+        logger.critical("The conversion with EFI is now handled only on the intel architecture.")
     if grub.is_secure_boot():
         # NOTE: need to be tested yet. So let's inhibit the conversion for now
         # until we are sure it's safe...
