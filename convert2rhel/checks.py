@@ -68,10 +68,7 @@ def check_efi():
     try:
         efiboot_info = grub.EFIBootInfo()
     except grub.BootloaderError as e:
-        # NOTE(pstodulk): maybe just print of the error msg could be enough..
-        logger.critical(
-            "Cannot check the booloader configuration: %s" % e.message
-        )
+        logger.critical(e.message)
 
     if not efiboot_info.entries[efiboot_info.current_boot].is_referring_to_file():
         # NOTE(pstodulk): Or critical? I am not sure how much this is even valid

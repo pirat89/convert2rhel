@@ -578,7 +578,7 @@ class TestEFIChecks(unittest.TestCase):
     @unit_tests.mock(os.path, "exists", lambda x: x == "/usr/sbin/efibootmgr")
     @unit_tests.mock(grub, "EFIBootInfo", EFIBootInfoMocked(exception=grub.BootloaderError("errmsg")))
     def test_check_efi_efi_detected_bootloader_error(self):
-        self._check_efi_critical("Cannot check the booloader configuration: errmsg")
+        self._check_efi_critical("errmsg")
 
     @unit_tests.mock(grub, "is_efi", lambda: True)
     @unit_tests.mock(grub, "is_secure_boot", lambda: False)
