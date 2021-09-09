@@ -1,0 +1,10 @@
+execute:
+    how: tmt
+discover:
+    how: fmf
+prepare:
+    - name: main preparation step
+      how: ansible
+      playbook: tests/ansible_collections/main.yml
+environment-file:
+  - .env

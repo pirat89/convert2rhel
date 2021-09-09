@@ -20,6 +20,7 @@ import os
 import sys
 
 from convert2rhel import (
+    breadcrumbs,
     cert,
     checks,
     grub,
@@ -56,6 +57,9 @@ def main():
     # initialize logging
     logger.initialize_logger("convert2rhel.log")
 
+    # prepare environment
+    utils.set_locale()
+
     # handle command line arguments
     toolopts.CLI()
 
@@ -69,15 +73,14 @@ def main():
         # gather system information
         loggerinst.task("Prepare: Gather system information")
         systeminfo.system_info.resolve_system_info()
+        breadcrumbs.breadcrumbs.collect_early_data()
 
         # check the system prior the conversion (possible inhibit)
-        loggerinst.task("Prepare: Initial system checks before conversion")
         checks.perform_pre_checks()
 
         # backup system release file before starting conversion process
         loggerinst.task("Prepare: Backup System")
         redhatrelease.system_release_file.backup()
-        redhatrelease.yum_conf.backup()
         repo.backup_yum_repos()
 
         loggerinst.task("Prepare: Clear YUM/DNF version locks")
@@ -89,9 +92,11 @@ def main():
 
         loggerinst.warning("********************************************************")
         loggerinst.warning("The tool allows rollback of any action until this point.")
-        loggerinst.warning("By continuing all further changes on the system"
-                           " will need to be reverted manually by the user,"
-                           " if necessary.")
+        loggerinst.warning(
+            "By continuing all further changes on the system"
+            " will need to be reverted manually by the user,"
+            " if necessary."
+        )
         loggerinst.warning("********************************************************")
         utils.ask_to_continue()
 
@@ -103,6 +108,11 @@ def main():
 
         loggerinst.task("Final: Configure the bootloader")
         grub.post_ponr_set_efi_configuration()
+
+        loggerinst.task("Final: Remove temporary folder %s" % utils.TMP_DIR)
+        utils.remove_tmp_dir()
+
+        loggerinst.info("\nConversion successful!\n")
 
         # restart system if required
         utils.restart_system()
@@ -130,6 +140,8 @@ def main():
             # or with the use of other backup tools.
             loggerinst.warning("Conversion process interrupted and manual user intervention will be necessary.")
 
+        breadcrumbs.breadcrumbs.finish_fail()
+
         return 1
 
     return 0
@@ -143,7 +155,7 @@ def show_eula():
     if eula_text:
         loggerinst.info(eula_text)
     else:
-        loggerinst.critical('EULA file not found.')
+        loggerinst.critical("EULA file not found.")
     return
 
 
@@ -153,10 +165,6 @@ def pre_ponr_conversion():
     # check if user pass some repo to both disablerepo and enablerepo options
     pkghandler.has_duplicate_repos_across_disablerepo_enablerepo_options()
 
-    # checking if /mnt and /sys are read-write
-    loggerinst.task("Convert: Checking /mnt and /sys are read-write")
-    utils.check_readonly_mounts()
-
     # package analysis
     loggerinst.task("Convert: List third-party packages")
     pkghandler.list_third_party_pkgs()
@@ -165,17 +173,18 @@ def pre_ponr_conversion():
     loggerinst.task("Convert: Remove excluded packages")
     pkghandler.remove_excluded_pkgs()
 
-
     # handle special cases
     loggerinst.task("Convert: Resolve possible edge cases")
     special_cases.check_and_resolve()
 
     rhel_repoids = []
-    if not toolopts.tool_opts.disable_submgr:
+    if not toolopts.tool_opts.no_rhsm:
         loggerinst.task("Convert: Subscription Manager - Download packages")
         subscription.download_rhsm_pkgs()
         loggerinst.task("Convert: Subscription Manager - Replace")
         subscription.replace_subscription_manager()
+        loggerinst.task("Convert: Subscription Manager - Verify installation")
+        subscription.verify_rhsm_installed()
         loggerinst.task("Convert: Install RHEL certificates for RHSM")
         system_cert = cert.SystemCert()
         system_cert.install()
@@ -194,13 +203,9 @@ def pre_ponr_conversion():
 
     # we need to enable repos after removing repofile pkgs, otherwise we don't get backups
     # to restore from on a rollback
-    if not toolopts.tool_opts.disable_submgr:
+    if not toolopts.tool_opts.no_rhsm:
         loggerinst.task("Convert: Subscription Manager - Enable RHEL repositories")
         subscription.enable_repos(rhel_repoids)
-
-    # comment out the distroverpkg variable in yum.conf
-    loggerinst.task("Convert: Patch yum configuration file")
-    redhatrelease.YumConf().patch()
 
     # perform final checks before the conversion
     loggerinst.task("Convert: Final system checks before main conversion")
@@ -221,6 +226,12 @@ def post_ponr_conversion():
     if grub.is_efi():
         loggerinst.task("Convert: Configure the bootloader")
         grub.post_ponr_set_efi_configuration()
+
+    loggerinst.task("Convert: Patch yum configuration file")
+    redhatrelease.YumConf().patch()
+
+    breadcrumbs.breadcrumbs.finish_success()
+
     return
 
 
@@ -228,8 +239,7 @@ def is_help_msg_exit(process_phase, err):
     """After printing the help message, optparse within the toolopts.CLI()
     call terminates the process with sys.exit(0).
     """
-    if process_phase == ConversionPhase.INIT and \
-            isinstance(err, SystemExit) and err.args[0] == 0:
+    if process_phase == ConversionPhase.INIT and isinstance(err, SystemExit) and err.args[0] == 0:
         return True
     return False
 
@@ -237,13 +247,14 @@ def is_help_msg_exit(process_phase, err):
 def rollback_changes():
     """Perform a rollback of changes made during conversion."""
 
-    loggerinst.warn("Abnormal exit! Performing rollback ...")
+    loggerinst.warning("Abnormal exit! Performing rollback ...")
     subscription.rollback()
     utils.changed_pkgs_control.restore_pkgs()
     repo.restore_yum_repos()
     redhatrelease.system_release_file.restore()
-    redhatrelease.yum_conf.restore()
     pkghandler.versionlock_file.restore()
+    system_cert = cert.SystemCert()
+    system_cert.remove()
 
     return
 

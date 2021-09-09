@@ -11,3 +11,9 @@ system_tests/vmdefs/centos*/.vagrant/
 .venv/*
 .install
 .images
+.pre-commit
+.env
+.rpms/*
+.srpms/*
+.idea/
+.cache/

@@ -20,6 +20,7 @@
 
 import sys
 import unittest
+
 import pytest
 
 import convert2rhel.toolopts
@@ -56,8 +57,11 @@ class TestToolopts(unittest.TestCase):
         self.assertEqual(tool_opts.password, "passwd")
         self.assertFalse(tool_opts.credentials_thru_cli)
 
-    @unit_tests.mock(sys, "argv", mock_cli_arguments(["--username", "uname",
-                                           "--password", "passwd"]))
+    @unit_tests.mock(
+        sys,
+        "argv",
+        mock_cli_arguments(["--username", "uname", "--password", "passwd"]),
+    )
     def test_cmdline_non_ineractive_with_credentials(self):
         convert2rhel.toolopts.CLI()
         self.assertEqual(tool_opts.username, "uname")
@@ -75,20 +79,35 @@ class TestToolopts(unittest.TestCase):
         self.assertEqual(tool_opts.enablerepo, ["foo"])
         self.assertEqual(tool_opts.disablerepo, ["*"])
 
-    @unit_tests.mock(sys, "argv", mock_cli_arguments(["--disable-submgr"]))
-    def test_cmdline_exits_on_empty_enablerepo_with_disable_submgr(self):
-        self.assertRaises(SystemExit, convert2rhel.toolopts.CLI)
+
+@pytest.mark.parametrize(
+    ("argv", "warn", "keep_rhsm_value"),
+    (
+        (mock_cli_arguments(["--keep-rhsm"]), False, True),
+        (mock_cli_arguments(["--keep-rhsm", "--disable-submgr", "--enablerepo", "test_repo"]), True, False),
+    ),
+)
+@mock.patch("convert2rhel.toolopts.tool_opts.keep_rhsm", False)
+def test_keep_rhsm(argv, warn, keep_rhsm_value, monkeypatch, caplog):
+    monkeypatch.setattr(sys, "argv", argv)
+    convert2rhel.toolopts.CLI()
+    if warn:
+        assert "Ignoring the --keep-rhsm option" in caplog.text
+    else:
+        assert "Ignoring the --keep-rhsm option" not in caplog.text
+    assert convert2rhel.toolopts.tool_opts.keep_rhsm == keep_rhsm_value
 
 
 @pytest.mark.parametrize(
-    ("argv", "warn", "ask_to_continue"), (
+    ("argv", "warn", "ask_to_continue"),
+    (
         (mock_cli_arguments(["-v", "Server"]), True, True),
         (mock_cli_arguments(["--variant", "Client"]), True, True),
         (mock_cli_arguments(["-v"]), True, True),
         (mock_cli_arguments(["--variant"]), True, True),
         (mock_cli_arguments(["--version"]), False, False),
         (mock_cli_arguments([]), False, False),
-    )
+    ),
 )
 def test_cmdline_obsolete_variant_option(argv, warn, ask_to_continue, monkeypatch, caplog):
     monkeypatch.setattr(sys, "argv", argv)
@@ -102,3 +121,27 @@ def test_cmdline_obsolete_variant_option(argv, warn, ask_to_continue, monkeypatc
         convert2rhel.utils.ask_to_continue.assert_called_once()
     else:
         convert2rhel.utils.ask_to_continue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("argv", "raise_exception", "no_rhsm_value"),
+    (
+        (mock_cli_arguments(["--disable-submgr"]), True, True),
+        (mock_cli_arguments(["--no-rhsm"]), True, True),
+        (mock_cli_arguments(["--disable-submgr", "--enablerepo", "test_repo"]), False, True),
+        (mock_cli_arguments(["--no-rhsm", "--disable-submgr", "--enablerepo", "test_repo"]), False, True),
+    ),
+)
+@mock.patch("convert2rhel.toolopts.tool_opts.no_rhsm", False)
+@mock.patch("convert2rhel.toolopts.tool_opts.enablerepo", [])
+def test_both_disable_submgr_and_no_rhsm_options_work(argv, raise_exception, no_rhsm_value, monkeypatch, caplog):
+    monkeypatch.setattr(sys, "argv", argv)
+
+    if raise_exception:
+        with pytest.raises(SystemExit):
+            convert2rhel.toolopts.CLI()
+            assert "The --enablerepo option is required when --disable-submgr or --no-rhsm is used." in caplog.text
+    else:
+        convert2rhel.toolopts.CLI()
+
+    assert convert2rhel.toolopts.tool_opts.no_rhsm == no_rhsm_value

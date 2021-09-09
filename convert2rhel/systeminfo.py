@@ -14,31 +14,46 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from convert2rhel.utils import run_subprocess
+import pprint
 
 from collections import namedtuple
+
+from convert2rhel.utils import run_subprocess
+
 
 try:
     import ConfigParser as configparser
 except ImportError:
     import configparser  # pylint: disable=import-error
+
 import difflib
+import logging
 import os
 import re
-import logging
 
-from convert2rhel import utils
+from convert2rhel import logger, utils
 from convert2rhel.toolopts import tool_opts
-from convert2rhel import logger
+
+
+# Allowed conversion paths to RHEL. We want to prevent a conversion and minor
+#   version update at the same time.
+RELEASE_VER_MAPPING = {
+    "8.5": "8.5",
+    "8.4": "8.4",
+    "7.9": "7Server",
+    "6.10": "6Server",
+}
 
 # For a list of modified rpm files before the conversion starts
-PRE_RPM_VA_LOG_FILENAME = 'rpm_va.log'
+PRE_RPM_VA_LOG_FILENAME = "rpm_va.log"
+
 # For a list of modified rpm files after the conversion finishes for comparison purposes
-POST_RPM_VA_LOG_FILENAME = 'rpm_va_after_conversion.log'
+POST_RPM_VA_LOG_FILENAME = "rpm_va_after_conversion.log"
+
+Version = namedtuple("Version", ["major", "minor"])
 
 
 class SystemInfo(object):
-
     def __init__(self):
         # Operating system name (e.g. Oracle Linux)
         self.name = None
@@ -58,7 +73,8 @@ class SystemInfo(object):
             # RHEL 6/7: RPM-GPG-KEY-redhat-legacy-release
             "5326810137017186",
             # RHEL 6/7: RPM-GPG-KEY-redhat-legacy-former
-            "219180cddb42a60e"]
+            "219180cddb42a60e",
+        ]
         # Packages to be removed before the system conversion
         self.excluded_pkgs = []
         # Release packages to be removed before the system conversion
@@ -74,6 +90,8 @@ class SystemInfo(object):
         self.releasever = None
         # List of kmods to not inhbit the conversion upon when detected as not available in RHEL
         self.kmods_to_ignore = []
+        # Booted kernel VRA (version, release, architecture), e.g. "4.18.0-240.22.1.el8_3.x86_64"
+        self.booted_kernel = ""
 
     def resolve_system_info(self):
         self.logger = logging.getLogger(__name__)
@@ -92,15 +110,16 @@ class SystemInfo(object):
         self.generate_rpm_va()
         self.releasever = self._get_releasever()
         self.kmods_to_ignore = self._get_kmods_to_ignore()
+        self.booted_kernel = self._get_booted_kernel()
 
     @staticmethod
     def _get_system_release_file_content():
         from convert2rhel import redhatrelease
+
         return redhatrelease.get_system_release_content()
 
     def _get_system_name(self):
-        name = re.search(r"(.+?)\s?(?:release\s?)?\d",
-                         self.system_release_file_content).group(1)
+        name = re.search(r"(.+?)\s?(?:release\s?)?\d", self.system_release_file_content).group(1)
         self.logger.info("%-20s %s" % ("Name:", name))
         return name
 
@@ -117,8 +136,9 @@ class SystemInfo(object):
         match = re.search(r".+?(\d+)\.(\d+)\D?", self.system_release_file_content)
         if not match:
             from convert2rhel import redhatrelease
+
             self.logger.critical("Couldn't get system version from %s" % redhatrelease.get_system_release_filepath())
-        version = namedtuple("Version", ["major", "minor"])(int(match.group(1)), int(match.group(2)))
+        version = Version(int(match.group(1)), int(match.group(2)))
 
         self.logger.info("%-20s %d.%d" % ("OS version:", version.major, version.minor))
         return version
@@ -130,9 +150,11 @@ class SystemInfo(object):
         return arch
 
     def _get_cfg_filename(self):
-        cfg_filename = "%s-%d-%s.cfg" % (self.id,
-                                         self.version.major,
-                                         self.arch)
+        cfg_filename = "%s-%d-%s.cfg" % (
+            self.id,
+            self.version.major,
+            self.arch,
+        )
         self.logger.info("%-20s %s" % ("Config filename:", cfg_filename))
         return cfg_filename
 
@@ -144,16 +166,21 @@ class SystemInfo(object):
         file.
         """
         cfg_parser = configparser.ConfigParser()
-        cfg_filepath = os.path.join(utils.DATA_DIR, "configs",
-                                    self.cfg_filename)
+        cfg_filepath = os.path.join(utils.DATA_DIR, "configs", self.cfg_filename)
         if not cfg_parser.read(cfg_filepath):
-            self.logger.critical("Current combination of system distribution"
-                                 " and architecture is not supported for the"
-                                 " conversion to RHEL.")
+            self.logger.critical(
+                "Current combination of system distribution"
+                " and architecture is not supported for the"
+                " conversion to RHEL."
+            )
 
         options_list = cfg_parser.options(section_name)
-        return dict(zip(options_list,
-                        [cfg_parser.get(section_name, opt) for opt in options_list]))
+        return dict(
+            zip(
+                options_list,
+                [cfg_parser.get(section_name, opt) for opt in options_list],
+            )
+        )
 
     def _get_default_rhsm_repoids(self):
         return self._get_cfg_opt("default_rhsm_repoids").split()
@@ -163,9 +190,9 @@ class SystemInfo(object):
         if option_name in self.cfg_content:
             return self.cfg_content[option_name]
         else:
-            self.logger.error("Internal error: %s option not found in %s"
-                              " config file."
-                              % (option_name, self.cfg_filename))
+            self.logger.error(
+                "Internal error: %s option not found in %s config file." % (option_name, self.cfg_filename)
+            )
 
     def _get_gpg_key_fingerprints(self):
         return self._get_cfg_opt("gpg_fingerprints").split()
@@ -177,10 +204,29 @@ class SystemInfo(object):
         return self._get_cfg_opt("repofile_pkgs").split()
 
     def _get_releasever(self):
-        return self._get_cfg_opt("releasever")
-    
+        """Get the release version to be passed to yum through --releasever.
+
+        The default value is hardcoded in the RELEASE_VER_MAPPING but it can be
+        overridden by the user by specifying it in the config file.
+        """
+        releasever_cfg = self._get_cfg_opt("releasever")
+        try:
+            # return config value or corresponding releasever from the RELEASE_VER_MAPPING
+            return releasever_cfg or RELEASE_VER_MAPPING[".".join(map(str, self.version))]
+        except KeyError:
+            self.logger.critical(
+                "%s of version %d.%d is not allowed for conversion.\n"
+                "Allowed versions are: %s"
+                % (self.name, self.version.major, self.version.minor, list(RELEASE_VER_MAPPING.keys()))
+            )
+
     def _get_kmods_to_ignore(self):
         return self._get_cfg_opt("kmods_to_ignore").split()
+
+    def _get_booted_kernel(self):
+        kernel_vra = run_subprocess("uname -r", print_output=False)[0].rstrip()
+        self.logger.debug("Booted kernel VRA (version, release, architecture): {0}".format(kernel_vra))
+        return kernel_vra
 
     def generate_rpm_va(self, log_filename=PRE_RPM_VA_LOG_FILENAME):
         """RPM is able to detect if any file installed as part of a package has been changed in any way after the
@@ -192,17 +238,18 @@ class SystemInfo(object):
             self.logger.info("Skipping the execution of 'rpm -Va'.")
             return
 
-        self.logger.info("Running the 'rpm -Va' command which can take several"
-                         " minutes. It can be disabled by using the"
-                         " --no-rpm-va option.")
+        self.logger.info(
+            "Running the 'rpm -Va' command which can take several"
+            " minutes. It can be disabled by using the"
+            " --no-rpm-va option."
+        )
         rpm_va, _ = utils.run_subprocess("rpm -Va", print_output=False)
         output_file = os.path.join(logger.LOG_DIR, log_filename)
         utils.store_content_to_file(output_file, rpm_va)
         self.logger.info("The 'rpm -Va' output has been stored in the %s file" % output_file)
 
     def modified_rpm_files_diff(self):
-        """Get a list of modified rpm files after the conversion and compare it to the one from before the conversion.
-        """
+        """Get a list of modified rpm files after the conversion and compare it to the one from before the conversion."""
         self.generate_rpm_va(log_filename=POST_RPM_VA_LOG_FILENAME)
 
         pre_rpm_va_log_path = os.path.join(logger.LOG_DIR, PRE_RPM_VA_LOG_FILENAME)
@@ -213,18 +260,24 @@ class SystemInfo(object):
         post_rpm_va_log_path = os.path.join(logger.LOG_DIR, POST_RPM_VA_LOG_FILENAME)
         post_rpm_va = utils.get_file_content(post_rpm_va_log_path, True)
         modified_rpm_files_diff = "\n".join(
-            difflib.unified_diff(pre_rpm_va, post_rpm_va, fromfile=pre_rpm_va_log_path, tofile=post_rpm_va_log_path,
-                                 n=0, lineterm=""))
+            difflib.unified_diff(
+                pre_rpm_va,
+                post_rpm_va,
+                fromfile=pre_rpm_va_log_path,
+                tofile=post_rpm_va_log_path,
+                n=0,
+                lineterm="",
+            )
+        )
 
         if modified_rpm_files_diff:
             self.logger.info(
-                "Comparison of modified rpm files from before and after the conversion:\n%s" % modified_rpm_files_diff)
+                "Comparison of modified rpm files from before and after the conversion:\n%s" % modified_rpm_files_diff
+            )
 
     @staticmethod
     def is_rpm_installed(name):
-        _, return_code = run_subprocess(
-            "rpm -q '%s'" % name, print_cmd=False, print_output=False
-        )
+        _, return_code = run_subprocess("rpm -q '%s'" % name, print_cmd=False, print_output=False)
         return return_code == 0
 
     # TODO write unit tests
@@ -240,11 +293,7 @@ class SystemInfo(object):
         #         "system_info.get_enabled_rhel_repos is not "
         #          "to be consumed before registering the system with RHSM."
         #     )
-        return (
-            self.submgr_enabled_repos
-            if not tool_opts.disable_submgr
-            else tool_opts.enablerepo
-        )
+        return self.submgr_enabled_repos if not tool_opts.no_rhsm else tool_opts.enablerepo
 
 
 # Code to be executed upon module import

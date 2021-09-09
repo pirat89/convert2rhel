@@ -15,15 +15,32 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from collections import namedtuple
 import os
-import subprocess
 import sys
+
+from collections import namedtuple
 
 import pytest
 
 from convert2rhel import checks, grub, unit_tests
-from convert2rhel.unit_tests import GetLoggerMocked
+from convert2rhel.checks import (
+    _bad_kernel_package_signature,
+    _bad_kernel_substring,
+    _bad_kernel_version,
+    check_rhel_compatible_kernel_is_used,
+    check_tainted_kmods,
+    ensure_compatibility_of_kmods,
+    get_loaded_kmods,
+    get_most_recent_unique_kernel_pkgs,
+    get_rhel_supported_kmods,
+    perform_pre_checks,
+    perform_pre_ponr_checks,
+)
+from convert2rhel.pkghandler import get_pkg_fingerprint
+from convert2rhel.systeminfo import system_info
+from convert2rhel.toolopts import tool_opts
+from convert2rhel.unit_tests import GetFileContentMocked, GetLoggerMocked, run_subprocess_side_effect
+from convert2rhel.unit_tests.conftest import centos7, centos8
 from convert2rhel.utils import run_subprocess
 
 
@@ -39,16 +56,23 @@ else:
     from unittest import mock  # pylint: disable=no-name-in-module
 
 
-HOST_MODULES_STUB_GOOD = (
+MODINFO_STUB = (
     "/lib/modules/5.8.0-7642-generic/kernel/lib/a.ko.xz\n"
     "/lib/modules/5.8.0-7642-generic/kernel/lib/b.ko.xz\n"
     "/lib/modules/5.8.0-7642-generic/kernel/lib/c.ko.xz\n"
 )
-HOST_MODULES_STUB_BAD = (
-    "/lib/modules/5.8.0-7642-generic/kernel/lib/d.ko.xz\n"
-    "/lib/modules/5.8.0-7642-generic/kernel/lib/e.ko.xz\n"
-    "/lib/modules/5.8.0-7642-generic/kernel/lib/f.ko.xz\n"
-)
+
+HOST_MODULES_STUB_GOOD = {
+    "kernel/lib/a.ko.xz",
+    "kernel/lib/b.ko.xz",
+    "kernel/lib/c.ko.xz",
+}
+HOST_MODULES_STUB_BAD = {
+    "kernel/lib/d.ko.xz",
+    "kernel/lib/e.ko.xz",
+    "kernel/lib/f.ko.xz",
+}
+
 REPOQUERY_F_STUB_GOOD = (
     "kernel-core-0:4.18.0-240.10.1.el8_3.x86_64\n"
     "kernel-core-0:4.18.0-240.15.1.el8_3.x86_64\n"
@@ -77,20 +101,12 @@ REPOQUERY_L_STUB_BAD = (
 )
 
 
-def _run_subprocess_side_effect(*stubs):
-    def factory(*args, **kwargs):
-        for kws, result in stubs:
-            if all(kw in args[0] for kw in kws):
-                return result
-        else:
-            return run_subprocess(*args, **kwargs)
-
-    return factory
-
-
 def test_perform_pre_checks(monkeypatch):
     check_thirdparty_kmods_mock = mock.Mock()
     check_efi_mock = mock.Mock()
+    check_readonly_mounts_mock = mock.Mock()
+    check_custom_repos_are_valid_mock = mock.Mock()
+    check_rhel_compatible_kernel_is_used_mock = mock.Mock()
     monkeypatch.setattr(
         checks,
         "check_efi",
@@ -101,11 +117,28 @@ def test_perform_pre_checks(monkeypatch):
         "check_tainted_kmods",
         value=check_thirdparty_kmods_mock,
     )
+    monkeypatch.setattr(
+        checks,
+        "check_readonly_mounts",
+        value=check_readonly_mounts_mock,
+    )
+    monkeypatch.setattr(
+        checks,
+        "check_rhel_compatible_kernel_is_used",
+        value=check_rhel_compatible_kernel_is_used_mock,
+    )
+    monkeypatch.setattr(
+        checks,
+        "check_custom_repos_are_valid",
+        value=check_custom_repos_are_valid_mock,
+    )
 
     checks.perform_pre_checks()
 
     check_thirdparty_kmods_mock.assert_called_once()
     check_efi_mock.assert_called_once()
+    check_readonly_mounts_mock.assert_called_once()
+    check_rhel_compatible_kernel_is_used_mock.assert_called_once()
 
 
 def test_pre_ponr_checks(monkeypatch):
@@ -141,21 +174,22 @@ def test_pre_ponr_checks(monkeypatch):
         ),
     ),
 )
+@centos8
 def test_ensure_compatibility_of_kmods(
     monkeypatch,
-    pretend_centos8,
+    pretend_os,
     caplog,
     host_kmods,
     exception,
     should_be_in_logs,
     shouldnt_be_in_logs,
 ):
+    monkeypatch.setattr(checks, "get_loaded_kmods", mock.Mock(return_value=host_kmods))
     run_subprocess_mock = mock.Mock(
-        side_effect=_run_subprocess_side_effect(
+        side_effect=run_subprocess_side_effect(
             (("uname",), ("5.8.0-7642-generic\n", 0)),
-            (("find",), (host_kmods, 0)),
-            (("repoquery", " -f "), (REPOQUERY_F_STUB_GOOD, 0)),
-            (("repoquery", " -l "), (REPOQUERY_L_STUB_GOOD, 0)),
+            (("repoquery", "-f"), (REPOQUERY_F_STUB_GOOD, 0)),
+            (("repoquery", "-l"), (REPOQUERY_L_STUB_GOOD, 0)),
         )
     )
     monkeypatch.setattr(
@@ -184,38 +218,42 @@ def test_ensure_compatibility_of_kmods(
         "exception",
     ),
     (
+        # ff-memless specified to be ignored in the config, so no exception raised
         (
-            "/lib/modules/3.10.0-1160.6.1/kernel/drivers/input/ff-memless.ko.xz\n",
+            "kernel/drivers/input/ff-memless.ko.xz",
             "Kernel modules are compatible",
             "The following kernel modules are not supported in RHEL",
             None,
         ),
         (
-            "/lib/modules/3.10.0-1160.6.1/kernel/drivers/input/other.ko.xz\n",
+            "kernel/drivers/input/other.ko.xz",
             "The following kernel modules are not supported in RHEL",
             None,
             SystemExit,
         ),
     ),
 )
+@centos7
 def test_ensure_compatibility_of_kmods_excluded(
     monkeypatch,
-    pretend_centos7,
+    pretend_os,
     caplog,
     unsupported_pkg,
     msg_in_logs,
     msg_not_in_logs,
     exception,
 ):
-    get_unsupported_kmods_mocked = mock.Mock(
-        wraps=checks.get_unsupported_kmods
+    monkeypatch.setattr(
+        checks,
+        "get_loaded_kmods",
+        mock.Mock(return_value=HOST_MODULES_STUB_GOOD | {unsupported_pkg}),
     )
+    get_unsupported_kmods_mocked = mock.Mock(wraps=checks.get_unsupported_kmods)
     run_subprocess_mock = mock.Mock(
-        side_effect=_run_subprocess_side_effect(
+        side_effect=run_subprocess_side_effect(
             (("uname",), ("5.8.0-7642-generic\n", 0)),
-            (("find",), (HOST_MODULES_STUB_GOOD + unsupported_pkg, 0)),
-            (("repoquery", " -f "), (REPOQUERY_F_STUB_GOOD, 0)),
-            (("repoquery", " -l "), (REPOQUERY_L_STUB_GOOD, 0)),
+            (("repoquery", "-f"), (REPOQUERY_F_STUB_GOOD, 0)),
+            (("repoquery", "-l"), (REPOQUERY_L_STUB_GOOD, 0)),
         )
     )
     monkeypatch.setattr(
@@ -255,54 +293,36 @@ def test_ensure_compatibility_of_kmods_excluded(
         ),
     )
     if msg_in_logs:
-        assert msg_in_logs in caplog.records[0].message
+        assert any(msg_in_logs in record.message for record in caplog.records)
     if msg_not_in_logs:
-        assert all(
-            msg_not_in_logs not in record.message for record in caplog.records
-        )
+        assert all(msg_not_in_logs not in record.message for record in caplog.records)
 
 
-@pytest.mark.parametrize(
-    ("run_subprocess_mock", "exp_res"),
-    (
-        (
-            mock.Mock(return_value=(HOST_MODULES_STUB_GOOD, 0)),
-            set(
+def test_get_installed_kmods(monkeypatch):
+    run_subprocess_mocked = mock.Mock(
+        spec=run_subprocess,
+        side_effect=run_subprocess_side_effect(
+            (
+                ("lsmod",),
                 (
-                    "kernel/lib/a.ko.xz",
-                    "kernel/lib/b.ko.xz",
-                    "kernel/lib/c.ko.xz",
-                )
+                    "Module                  Size  Used by\n"
+                    "a                 81920  4\n"
+                    "b    49152  0\n"
+                    "c              40960  1\n",
+                    0,
+                ),
             ),
+            (("modinfo", "-F", "filename", "a"), (MODINFO_STUB.split()[0] + "\n", 0)),
+            (("modinfo", "-F", "filename", "b"), (MODINFO_STUB.split()[1] + "\n", 0)),
+            (("modinfo", "-F", "filename", "c"), (MODINFO_STUB.split()[2] + "\n", 0)),
         ),
-        (
-            mock.Mock(return_value=("", 1)),
-            None,
-        ),
-        (
-            mock.Mock(
-                side_effect=subprocess.CalledProcessError(returncode=1, cmd="")
-            ),
-            None,
-        ),
-    ),
-)
-def test_get_installed_kmods(
-    tmpdir, monkeypatch, caplog, run_subprocess_mock, exp_res
-):
+    )
     monkeypatch.setattr(
         checks,
         "run_subprocess",
-        value=run_subprocess_mock,
+        value=run_subprocess_mocked,
     )
-    if exp_res:
-        assert exp_res == checks.get_installed_kmods()
-    else:
-        with pytest.raises(SystemExit):
-            checks.get_installed_kmods()
-        assert (
-            "Can't get list of kernel modules." in caplog.records[-1].message
-        )
+    assert get_loaded_kmods() == {"kernel/lib/c.ko.xz", "kernel/lib/a.ko.xz", "kernel/lib/b.ko.xz"}
 
 
 @pytest.mark.parametrize(
@@ -312,21 +332,22 @@ def test_get_installed_kmods(
         (REPOQUERY_F_STUB_BAD, REPOQUERY_L_STUB_GOOD, SystemExit),
     ),
 )
+@centos8
 def test_get_rhel_supported_kmods(
     monkeypatch,
-    pretend_centos8,
+    pretend_os,
     repoquery_f_stub,
     repoquery_l_stub,
     exception,
 ):
     run_subprocess_mock = mock.Mock(
-        side_effect=_run_subprocess_side_effect(
+        side_effect=run_subprocess_side_effect(
             (
-                ("repoquery", " -f "),
+                ("repoquery", "-f"),
                 (repoquery_f_stub, 0),
             ),
             (
-                ("repoquery", " -l "),
+                ("repoquery", "-l"),
                 (repoquery_l_stub, 0),
             ),
         )
@@ -462,29 +483,25 @@ def test_check_tainted_kmods(monkeypatch, command_return, expected_exception):
         checks.check_tainted_kmods()
 
 
-class EFIBootInfoMocked():
+class EFIBootInfoMocked:
 
     _ENTRIES = {
         "0001": grub.EFIBootLoader(
-                    boot_number="0001",
-                    label="Centos Linux",
-                    active=True,
-                    efi_bin_source="HD(1,GPT,28c77f6b-3cd0-4b22-985f-c99903835d79,0x800,0x12c000)/File(\\EFI\\centos\\shimx64.efi)",
+            boot_number="0001",
+            label="Centos Linux",
+            active=True,
+            efi_bin_source="HD(1,GPT,28c77f6b-3cd0-4b22-985f-c99903835d79,0x800,0x12c000)/File(\\EFI\\centos\\shimx64.efi)",
         ),
         "0002": grub.EFIBootLoader(
-                    boot_number="0002",
-                    label="Foo label",
-                    active=True,
-                    efi_bin_source="FvVol(7cb8bdc9-f8eb-4f34-aaea-3ee4af6516a1)/FvFile(462caa21-7614-4503-836e-8ab6f4662331)",
+            boot_number="0002",
+            label="Foo label",
+            active=True,
+            efi_bin_source="FvVol(7cb8bdc9-f8eb-4f34-aaea-3ee4af6516a1)/FvFile(462caa21-7614-4503-836e-8ab6f4662331)",
         ),
     }
 
-    def __init__(self,
-                 current_boot="0001",
-                 next_boot=None,
-                 boot_order=("0001", "0002"),
-                 entries=_ENTRIES,
-                 exception=None
+    def __init__(
+        self, current_boot="0001", next_boot=None, boot_order=("0001", "0002"), entries=_ENTRIES, exception=None
     ):
         self.current_boot = current_boot
         self.next_boot = next_boot
@@ -505,11 +522,11 @@ class EFIBootInfoMocked():
         raise self._exception
 
 
+def _gen_version(major, minor):
+    return namedtuple("Version", ["major", "minor"])(major, minor)
+
+
 class TestEFIChecks(unittest.TestCase):
-
-    def _gen_version(major, minor):
-        return namedtuple("Version", ["major", "minor"])(major, minor)
-
     def _check_efi_detection_log(self, efi_detected=True):
         if efi_detected:
             self.assertFalse("BIOS detected." in checks.logger.debug_msgs)
@@ -590,10 +607,7 @@ class TestEFIChecks(unittest.TestCase):
     def test_check_efi_efi_detected_nofile_entry(self):
         checks.check_efi()
         self._check_efi_detection_log()
-        warn_msg = (
-            "The current EFI bootloader '0002' is not referring to any"
-            " binary EFI file located on ESP."
-        )
+        warn_msg = "The current EFI bootloader '0002' is not referring to any" " binary EFI file located on ESP."
         self.assertTrue(warn_msg in checks.logger.warning_msgs)
 
     @unit_tests.mock(grub, "is_efi", lambda: True)
@@ -607,3 +621,192 @@ class TestEFIChecks(unittest.TestCase):
         checks.check_efi()
         self._check_efi_detection_log()
         self.assertEqual(len(checks.logger.warning_msgs), 0)
+
+
+@pytest.mark.parametrize(
+    # i.e. _bad_kernel_version...
+    ("any_of_the_subchecks_is_true",),
+    (
+        (True,),
+        (False,),
+    ),
+)
+def test_check_rhel_compatible_kernel_is_used(
+    any_of_the_subchecks_is_true,
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setattr(
+        checks,
+        "_bad_kernel_version",
+        value=mock.Mock(return_value=any_of_the_subchecks_is_true),
+    )
+    monkeypatch.setattr(
+        checks,
+        "_bad_kernel_substring",
+        value=mock.Mock(return_value=False),
+    )
+    monkeypatch.setattr(
+        checks,
+        "_bad_kernel_package_signature",
+        value=mock.Mock(return_value=False),
+    )
+    if any_of_the_subchecks_is_true:
+        with pytest.raises(SystemExit):
+            check_rhel_compatible_kernel_is_used()
+    else:
+        check_rhel_compatible_kernel_is_used()
+        assert "Kernel is compatible" in caplog.records[-1].message
+
+
+@pytest.mark.parametrize(
+    ("kernel_release", "major_ver", "exp_return"),
+    (
+        ("5.11.0-7614-generic", None, True),
+        ("3.10.0-1160.24.1.el7.x86_64", 7, False),
+        ("3.10.0-1160.24.1.el7.x86_64", 6, True),
+        ("5.4.17-2102.200.13.el8uek.x86_64", 8, True),
+        ("4.18.0-240.22.1.el8_3.x86_64", 8, False),
+    ),
+)
+def test_bad_kernel_version(kernel_release, major_ver, exp_return, monkeypatch):
+    Version = namedtuple("Version", ("major", "minor"))
+    monkeypatch.setattr(
+        checks.system_info,
+        "version",
+        value=Version(major=major_ver, minor=0),
+    )
+    assert _bad_kernel_version(kernel_release) == exp_return
+
+
+@pytest.mark.parametrize(
+    ("kernel_release", "exp_return"),
+    (
+        ("3.10.0-1160.24.1.el7.x86_64", False),
+        ("5.4.17-2102.200.13.el8uek.x86_64", True),
+        ("3.10.0-514.2.2.rt56.424.el7.x86_64", True),
+    ),
+)
+def test_bad_kernel_substring(kernel_release, exp_return, monkeypatch):
+    assert _bad_kernel_substring(kernel_release) == exp_return
+
+
+@pytest.mark.parametrize(
+    ("kernel_release", "kernel_pkg", "kernel_pkg_fingerprint", "exp_return"),
+    (
+        (
+            "4.18.0-240.22.1.el8_3.x86_64",
+            "kernel-core",
+            "05b555b38483c65d",
+            False,
+        ),
+        (
+            "4.18.0-240.22.1.el8_3.x86_64",
+            "kernel-core",
+            "somebadsig",
+            True,
+        ),
+    ),
+)
+@centos8
+def test_bad_kernel_fingerprint(
+    kernel_release,
+    kernel_pkg,
+    kernel_pkg_fingerprint,
+    exp_return,
+    monkeypatch,
+    pretend_os,
+):
+    run_subprocess_mocked = mock.Mock(spec=run_subprocess, return_value=(kernel_pkg, ""))
+    get_pkg_fingerprint_mocked = mock.Mock(spec=get_pkg_fingerprint, return_value=kernel_pkg_fingerprint)
+    monkeypatch.setattr(checks, "run_subprocess", run_subprocess_mocked)
+    monkeypatch.setattr(
+        checks,
+        "get_installed_pkg_objects",
+        mock.Mock(return_value=[kernel_pkg]),
+    )
+    monkeypatch.setattr(checks, "get_pkg_fingerprint", get_pkg_fingerprint_mocked)
+    assert _bad_kernel_package_signature(kernel_release) == exp_return
+
+
+class TestReadOnlyMountsChecks(unittest.TestCase):
+    @unit_tests.mock(checks, "logger", GetLoggerMocked())
+    @unit_tests.mock(
+        checks,
+        "get_file_content",
+        GetFileContentMocked(
+            data=[
+                "sysfs /sys sysfs rw,seclabel,nosuid,nodev,noexec,relatime 0 0",
+                "mnt /mnt sysfs rw,seclabel,nosuid,nodev,noexec,relatime 0 0",
+                "cgroup /sys/fs/cgroup/cpuset cgroup rw,seclabel,nosuid,nodev,noexec,relatime,cpuset 0 0",
+            ]
+        ),
+    )
+    def test_mounted_are_readwrite(self):
+        checks.check_readonly_mounts()
+        self.assertEqual(len(checks.logger.critical_msgs), 0)
+        self.assertEqual(len(checks.logger.debug_msgs), 2)
+        self.assertTrue("/mnt mount point is not read-only." in checks.logger.debug_msgs)
+        self.assertTrue("/sys mount point is not read-only." in checks.logger.debug_msgs)
+
+    @unit_tests.mock(checks, "logger", GetLoggerMocked())
+    @unit_tests.mock(
+        checks,
+        "get_file_content",
+        GetFileContentMocked(
+            data=[
+                "sysfs /sys sysfs rw,seclabel,nosuid,nodev,noexec,relatime 0 0",
+                "mnt /mnt sysfs ro,seclabel,nosuid,nodev,noexec,relatime 0 0",
+                "cgroup /sys/fs/cgroup/cpuset cgroup rw,seclabel,nosuid,nodev,noexec,relatime,cpuset 0 0",
+            ]
+        ),
+    )
+    def test_mounted_are_readonly(self):
+        self.assertRaises(SystemExit, checks.check_readonly_mounts)
+        self.assertEqual(len(checks.logger.critical_msgs), 1)
+        self.assertTrue(
+            "Stopping conversion due to read-only mount to /mnt directory" in checks.logger.critical_msgs[0]
+        )
+        self.assertTrue(
+            "Stopping conversion due to read-only mount to /sys directory" not in checks.logger.critical_msgs[0]
+        )
+        self.assertTrue("/sys mount point is not read-only." in checks.logger.debug_msgs[0])
+
+    class CallYumCmdMocked(unit_tests.MockFunction):
+        def __init__(self, ret_code, ret_string):
+            self.called = 0
+            self.return_code = ret_code
+            self.return_string = ret_string
+            self.fail_once = False
+            self.command = None
+
+        def __call__(self, command, *args, **kwargs):
+            if self.fail_once and self.called == 0:
+                self.return_code = 1
+            if self.fail_once and self.called > 0:
+                self.return_code = 0
+            self.called += 1
+            self.command = command
+            return self.return_string, self.return_code
+
+    @unit_tests.mock(system_info, "version", namedtuple("Version", ["major", "minor"])(7, 0))
+    @unit_tests.mock(checks, "call_yum_cmd", CallYumCmdMocked(ret_code=0, ret_string="Abcdef"))
+    @unit_tests.mock(checks, "logger", GetLoggerMocked())
+    @unit_tests.mock(tool_opts, "no_rhsm", True)
+    def test_custom_repos_are_valid(self):
+        checks.check_custom_repos_are_valid()
+        self.assertEqual(len(checks.logger.info_msgs), 1)
+        self.assertEqual(len(checks.logger.debug_msgs), 1)
+        self.assertTrue(
+            "The repositories passed through the --enablerepo option are all accessible." in checks.logger.info_msgs
+        )
+
+    @unit_tests.mock(system_info, "version", namedtuple("Version", ["major", "minor"])(7, 0))
+    @unit_tests.mock(checks, "call_yum_cmd", CallYumCmdMocked(ret_code=1, ret_string="Abcdef"))
+    @unit_tests.mock(checks, "logger", GetLoggerMocked())
+    @unit_tests.mock(tool_opts, "no_rhsm", True)
+    def test_custom_repos_are_invalid(self):
+        self.assertRaises(SystemExit, checks.check_custom_repos_are_valid)
+        self.assertEqual(len(checks.logger.critical_msgs), 1)
+        self.assertEqual(len(checks.logger.info_msgs), 0)
+        self.assertTrue("Unable to access the repositories passed through " in checks.logger.critical_msgs[0])

@@ -9,23 +9,32 @@
 	lint \
 	lint-errors \
 	tests8 \
+	rpms \
 
 # Project constants
 IMAGE ?= convert2rhel
 PYTHON ?= python3
 PIP ?= pip3
 VENV ?= .venv3
+PRE_COMMIT ?= pre-commit
+SHOW_CAPTURE ?= no
 
 all: clean images tests
 
-install: .install
+install: .install .images .env .pre-commit
 
 .install:
 	virtualenv --system-site-packages --python $(PYTHON) $(VENV); \
 	. $(VENV)/bin/activate; \
 	$(PIP) install --upgrade -r ./requirements/local.centos8.requirements.txt; \
-	$(PIP) install -e .
 	touch $@
+
+.pre-commit:
+	$(PRE_COMMIT) install --install-hooks
+	touch $@
+
+.env:
+	cp .env.example .env
 
 tests-locally: install
 	. $(VENV)/bin/activate; pytest
@@ -42,18 +51,17 @@ clean:
 images: .images
 
 .images:
-	@docker build -f Dockerfiles/centos6.Dockerfile -t $(IMAGE)/centos6 .
 	@docker build -f Dockerfiles/centos7.Dockerfile -t $(IMAGE)/centos7 .
 	@docker build -f Dockerfiles/centos8.Dockerfile -t $(IMAGE)/centos8 .
+	@docker build -f Dockerfiles/rpmbuild.centos8.Dockerfile -t $(IMAGE)/centos8rpmbuild .
+	@docker build -f Dockerfiles/rpmbuild.centos7.Dockerfile -t $(IMAGE)/centos7rpmbuild .
 	touch $@
 
 tests: images
-	@echo 'CentOS Linux 6 tests'
-	@docker run --user=$(id -ur):$(id -gr) --rm -v $(shell pwd):/data:Z $(IMAGE)/centos6 pytest
 	@echo 'CentOS Linux 7 tests'
-	@docker run --user=$(id -ur):$(id -gr) --rm -v $(shell pwd):/data:Z $(IMAGE)/centos7 pytest
+	@docker run --user=$(id -ur):$(id -gr) --rm -v $(shell pwd):/data:Z $(IMAGE)/centos7 pytest --show-capture=$(SHOW_CAPTURE)
 	@echo 'CentOS Linux 8 tests'
-	@docker run --user=$(id -ur):$(id -gr) --rm -v $(shell pwd):/data:Z $(IMAGE)/centos8 pytest
+	@docker run --user=$(id -ur):$(id -gr) --rm -v $(shell pwd):/data:Z $(IMAGE)/centos8 pytest --show-capture=$(SHOW_CAPTURE)
 
 lint: images
 	@docker run --rm -v $(shell pwd):/data:Z $(IMAGE)/centos8 bash -c "scripts/run_lint.sh"
@@ -62,4 +70,33 @@ lint-errors: images
 	@docker run --rm -v $(shell pwd):/data:Z $(IMAGE)/centos8 bash -c "scripts/run_lint.sh --errors-only"
 
 tests8: images
-	@docker run --rm -v $(shell pwd):/data:Z $(IMAGE)/centos8 pytest
+	@docker run --rm -v $(shell pwd):/data:Z $(IMAGE)/centos8 pytest --show-capture=$(SHOW_CAPTURE)
+
+rpms: images
+	mkdir -p .rpms
+	rm -frv .rpms/*
+	docker build -f Dockerfiles/rpmbuild.centos8.Dockerfile -t $(IMAGE)/centos8rpmbuild .
+	docker build -f Dockerfiles/rpmbuild.centos7.Dockerfile -t $(IMAGE)/centos7rpmbuild .
+	docker cp $$(docker create $(IMAGE)/centos8rpmbuild):/data/.rpms .
+	docker cp $$(docker create $(IMAGE)/centos7rpmbuild):/data/.rpms .
+	docker rm $$(docker ps -aq) -f
+
+copr-build: rpms
+	mkdir -p .srpms
+	rm -frv .srpms/*
+	docker cp $$(docker create $(IMAGE)/centos8rpmbuild):/data/.srpms .
+	docker cp $$(docker create $(IMAGE)/centos7rpmbuild):/data/.srpms .
+	docker rm $$(docker ps -aq) -f
+	copr-cli --config .copr.conf build --nowait @oamg/convert2rhel .srpms/*
+
+update-vms:
+	virsh start c2r_centos8_template
+	virsh start c2r_centos7_template
+	virsh start c2r_oracle8_template
+	virsh start c2r_oracle7_template
+	sleep 10
+	ansible-playbook -v -c community.libvirt.libvirt_qemu -i c2r_centos8_template,c2r_centos7_template,c2r_oracle8_template,c2r_oracle7_template tests/ansible_collections/update_templates.yml
+	virsh shutdown c2r_centos8_template
+	virsh shutdown c2r_centos7_template
+	virsh shutdown c2r_oracle8_template
+	virsh shutdown c2r_oracle7_template

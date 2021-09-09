@@ -23,6 +23,7 @@ from warnings import warn
 
 from convert2rhel.utils import run_subprocess
 
+
 TMP_DIR = "/tmp/convert2rhel_test/"
 NONEXISTING_DIR = os.path.join(TMP_DIR, "nonexisting_dir/")
 NONEXISTING_FILE = os.path.join(TMP_DIR, "nonexisting.file")
@@ -104,7 +105,7 @@ def safe_repr(obj, short=False):
         result = object.__repr__(obj)
     if not short or len(result) < _MAX_LENGTH:
         return result
-    return result[:_MAX_LENGTH] + ' [truncated]...'
+    return result[:_MAX_LENGTH] + " [truncated]..."
 
 
 class ExtendedTestCase(unittest.TestCase):
@@ -120,8 +121,10 @@ class ExtendedTestCase(unittest.TestCase):
         Just like self.assertTrue(a in b), but with a nicer default message.
         """
         if member not in container:
-            standard_msg = '%s not found in %s' % (safe_repr(member),
-                                                   safe_repr(container))
+            standard_msg = "%s not found in %s" % (
+                safe_repr(member),
+                safe_repr(container),
+            )
             self.fail(self._formatMessage(msg, standard_msg))
 
     def _formatMessage(self, msg, standard_msg):
@@ -134,9 +137,9 @@ class ExtendedTestCase(unittest.TestCase):
         try:
             # don't switch to '{}' formatting in Python 2.X
             # it changes the way unicode input is handled
-            return '%s : %s' % (standard_msg, msg)
+            return "%s : %s" % (standard_msg, msg)
         except UnicodeDecodeError:
-            return '%s : %s' % (safe_repr(standard_msg), safe_repr(msg))
+            return "%s : %s" % (safe_repr(standard_msg), safe_repr(msg))
 
 
 class MockFunction(object):
@@ -221,12 +224,42 @@ class GetLoggerMocked(MockFunction):
 
 
 class GetFileContentMocked(MockFunction):
-        def __init__(self, data, as_list=True):
-            self.data = data
-            self.as_list = as_list
-            self.called = 0
+    def __init__(self, data, as_list=True):
+        self.data = data
+        self.as_list = as_list
+        self.called = 0
 
-        def __call__(self, filename, as_list):
-            self.called += 1
-            self.as_list = as_list
-            return [x.strip() for x in self.data] if self.as_list else self.data
+    def __call__(self, filename, as_list):
+        self.called += 1
+        self.as_list = as_list
+        return [x.strip() for x in self.data] if self.as_list else self.data
+
+
+def run_subprocess_side_effect(*stubs):
+    """Side effect function for utils.run_subprocess.
+    :type stubs: Tuple[Tuple[command, ...], Tuple[command_stdout, exit_code]]
+
+    Allows you to parametrize the mocking by providing list of stubs
+
+    if run_subprocess called with args, which are not specified in
+    stubs, then no mocking happening and a real subprocess call will be made.
+
+    Example:
+    >>> run_subprocess_mock = mock.Mock(
+    >>>     side_effect=run_subprocess_side_effect(
+    >>>         (("uname",), ("5.8.0-7642-generic\n", 0)),
+    >>>         (("repoquery", "-f"), (REPOQUERY_F_STUB_GOOD, 0)),
+    >>>         (("repoquery", "-l"), (REPOQUERY_L_STUB_GOOD, 0)),
+    >>>     )
+    >>> )
+
+    """
+
+    def factory(*args, **kwargs):
+        for kws, result in stubs:
+            if all(kw in args[0].split() for kw in kws):
+                return result
+        else:
+            return run_subprocess(*args, **kwargs)
+
+    return factory

@@ -19,21 +19,13 @@
 import os
 import unittest
 
+
 try:
     from collections import OrderedDict
 except ImportError:
     from ordereddict import OrderedDict
 
-from convert2rhel import unit_tests  # Imports unit_tests/__init__.py
-from convert2rhel import (
-    cert,
-    main,
-    pkghandler,
-    redhatrelease,
-    repo,
-    subscription,
-    utils,
-)
+from convert2rhel import cert, checks, main, pkghandler, redhatrelease, repo, subscription, unit_tests, utils
 from convert2rhel.toolopts import tool_opts
 
 
@@ -46,8 +38,7 @@ class TestMain(unittest.TestCase):
         def __call__(self, *args, **kwargs):
             return
 
-    eula_dir = os.path.realpath(os.path.join(os.path.dirname(__file__),
-                                             "..", "data", "version-independent"))
+    eula_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "data", "version-independent"))
 
     @unit_tests.mock(utils, "DATA_DIR", eula_dir)
     def test_show_eula(self):
@@ -128,32 +119,45 @@ class TestMain(unittest.TestCase):
         self.assertRaises(SystemExit, main.show_eula)
         self.assertEqual(len(main.loggerinst.critical_msgs), 1)
 
-    @unit_tests.mock(utils.changed_pkgs_control, "restore_pkgs", unit_tests.CountableMockObject())
-    @unit_tests.mock(redhatrelease.system_release_file, "restore", unit_tests.CountableMockObject())
+    @unit_tests.mock(
+        utils.changed_pkgs_control,
+        "restore_pkgs",
+        unit_tests.CountableMockObject(),
+    )
+    @unit_tests.mock(
+        redhatrelease.system_release_file,
+        "restore",
+        unit_tests.CountableMockObject(),
+    )
     @unit_tests.mock(repo, "restore_yum_repos", unit_tests.CountableMockObject())
-    @unit_tests.mock(redhatrelease.yum_conf, "restore", unit_tests.CountableMockObject())
     @unit_tests.mock(subscription, "rollback", unit_tests.CountableMockObject())
-    @unit_tests.mock(pkghandler.versionlock_file, "restore", unit_tests.CountableMockObject())
+    @unit_tests.mock(
+        pkghandler.versionlock_file,
+        "restore",
+        unit_tests.CountableMockObject(),
+    )
+    @unit_tests.mock(cert.SystemCert, "_get_cert", lambda _get_cert: ("anything", "anything"))
+    @unit_tests.mock(cert.SystemCert, "remove", unit_tests.CountableMockObject())
     def test_rollback_changes(self):
         main.rollback_changes()
         self.assertEqual(utils.changed_pkgs_control.restore_pkgs.called, 1)
         self.assertEqual(repo.restore_yum_repos.called, 1)
         self.assertEqual(redhatrelease.system_release_file.restore.called, 1)
-        self.assertEqual(redhatrelease.yum_conf.restore.called, 1)
         self.assertEqual(subscription.rollback.called, 1)
         self.assertEqual(pkghandler.versionlock_file.restore.called, 1)
+        self.assertEqual(cert.SystemCert.remove.called, 1)
 
     @unit_tests.mock(main.logging, "getLogger", GetLoggerMocked())
-    @unit_tests.mock(tool_opts, "disable_submgr", False)
-    @unit_tests.mock(cert.SystemCert, "_get_cert_path", unit_tests.MockFunction)
+    @unit_tests.mock(tool_opts, "no_rhsm", False)
+    @unit_tests.mock(cert.SystemCert, "_get_cert", lambda _get_cert: ("anything", "anything"))
     @mock_calls(main.special_cases, "check_and_resolve", CallOrderMocked)
     @mock_calls(main.checks, "perform_pre_checks", CallOrderMocked)
     @mock_calls(main.checks, "perform_pre_ponr_checks", CallOrderMocked)
     @mock_calls(pkghandler, "remove_excluded_pkgs", CallOrderMocked)
     @mock_calls(subscription, "replace_subscription_manager", CallOrderMocked)
+    @mock_calls(subscription, "verify_rhsm_installed", CallOrderMocked)
     @mock_calls(pkghandler, "remove_repofile_pkgs", CallOrderMocked)
     @mock_calls(cert.SystemCert, "install", CallOrderMocked)
-    @mock_calls(redhatrelease.YumConf, "patch", CallOrderMocked)
     @mock_calls(pkghandler, "list_third_party_pkgs", CallOrderMocked)
     @mock_calls(subscription, "subscribe_system", CallOrderMocked)
     @mock_calls(repo, "get_rhel_repoids", CallOrderMocked)
@@ -161,7 +165,7 @@ class TestMain(unittest.TestCase):
     @mock_calls(subscription, "disable_repos", CallOrderMocked)
     @mock_calls(subscription, "enable_repos", CallOrderMocked)
     @mock_calls(subscription, "download_rhsm_pkgs", CallOrderMocked)
-    @unit_tests.mock(utils, "check_readonly_mounts", GetFakeFunctionMocked)
+    @unit_tests.mock(checks, "check_readonly_mounts", GetFakeFunctionMocked)
     def test_pre_ponr_conversion_order_with_rhsm(self):
         self.CallOrderMocked.reset()
         main.pre_ponr_conversion()
@@ -172,6 +176,7 @@ class TestMain(unittest.TestCase):
         intended_call_order["check_and_resolve"] = 1
         intended_call_order["download_rhsm_pkgs"] = 1
         intended_call_order["replace_subscription_manager"] = 1
+        intended_call_order["verify_rhsm_installed"] = 1
         intended_call_order["install"] = 1
         intended_call_order["subscribe_system"] = 1
         intended_call_order["get_rhel_repoids"] = 1
@@ -179,7 +184,6 @@ class TestMain(unittest.TestCase):
         intended_call_order["disable_repos"] = 1
         intended_call_order["remove_repofile_pkgs"] = 1
         intended_call_order["enable_repos"] = 1
-        intended_call_order["patch"] = 1
         intended_call_order["perform_pre_ponr_checks"] = 1
         intended_call_order["perform_pre_checks"] = 1
 
@@ -190,16 +194,16 @@ class TestMain(unittest.TestCase):
                 self.assertEqual(expected, actual)
 
     @unit_tests.mock(main.logging, "getLogger", GetLoggerMocked())
-    @unit_tests.mock(tool_opts, "disable_submgr", False)
-    @unit_tests.mock(cert.SystemCert, "_get_cert_path", unit_tests.MockFunction)
+    @unit_tests.mock(tool_opts, "no_rhsm", False)
+    @unit_tests.mock(cert.SystemCert, "_get_cert", lambda _get_cert: ("anything", "anything"))
     @mock_calls(main.special_cases, "check_and_resolve", CallOrderMocked)
     @mock_calls(main.checks, "perform_pre_checks", CallOrderMocked)
     @mock_calls(main.checks, "perform_pre_ponr_checks", CallOrderMocked)
     @mock_calls(pkghandler, "remove_excluded_pkgs", CallOrderMocked)
     @mock_calls(subscription, "replace_subscription_manager", CallOrderMocked)
+    @mock_calls(subscription, "verify_rhsm_installed", CallOrderMocked)
     @mock_calls(pkghandler, "remove_repofile_pkgs", CallOrderMocked)
     @mock_calls(cert.SystemCert, "install", CallOrderMocked)
-    @mock_calls(redhatrelease.YumConf, "patch", CallOrderMocked)
     @mock_calls(pkghandler, "list_third_party_pkgs", CallOrderMocked)
     @mock_calls(subscription, "subscribe_system", CallOrderMocked)
     @mock_calls(repo, "get_rhel_repoids", CallOrderMocked)
@@ -207,7 +211,7 @@ class TestMain(unittest.TestCase):
     @mock_calls(subscription, "disable_repos", CallOrderMocked)
     @mock_calls(subscription, "enable_repos", CallOrderMocked)
     @mock_calls(subscription, "download_rhsm_pkgs", CallOrderMocked)
-    @unit_tests.mock(utils, "check_readonly_mounts", GetFakeFunctionMocked)
+    @unit_tests.mock(checks, "check_readonly_mounts", GetFakeFunctionMocked)
     def test_pre_ponr_conversion_order_without_rhsm(self):
         self.CallOrderMocked.reset()
         main.pre_ponr_conversion()
@@ -221,6 +225,7 @@ class TestMain(unittest.TestCase):
         # Do not expect this one to be called - related to RHSM
         intended_call_order["download_rhsm_pkgs"] = 0
         intended_call_order["replace_subscription_manager"] = 0
+        intended_call_order["verify_rhsm_installed"] = 0
         intended_call_order["install"] = 0
         intended_call_order["subscribe_system"] = 0
         intended_call_order["get_rhel_repoids"] = 0
@@ -228,10 +233,9 @@ class TestMain(unittest.TestCase):
         intended_call_order["disable_repos"] = 0
 
         intended_call_order["remove_repofile_pkgs"] = 1
-        
+
         intended_call_order["enable_repos"] = 0
-        
-        intended_call_order["patch"] = 1
+
         intended_call_order["perform_pre_ponr_checks"] = 1
 
         # Merge the two together like a zipper, creates a tuple which we can assert with - including method call order!
