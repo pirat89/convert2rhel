@@ -15,10 +15,11 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from collections import namedtuple
 import os
 import subprocess
 import sys
+
+from collections import namedtuple
 
 import pytest
 
@@ -42,16 +43,19 @@ else:
 _SEC_STDOUT_ENABLED = "secure boot enabled"
 _SEC_STDOUT_DISABLED = "e.g. nothing..."
 # subproc is tuple (stdout, ecode) or None in case exception should be raised
-@pytest.mark.parametrize(("expected_res", "is_efi", "subproc"), (
-    (False, False, (_SEC_STDOUT_ENABLED, 0)),
-    (False, False, (_SEC_STDOUT_DISABLED, 0)),
-    (False, False, ("", 1)),
-    (False, True, ("", 1)),
-    (False, True, (_SEC_STDOUT_ENABLED, 1)), # seems to be invalid case, but..
-    (False, True, (_SEC_STDOUT_DISABLED, 0)),
-    (False, True, None),
-    (True, True, (_SEC_STDOUT_ENABLED, 0)),
-))
+@pytest.mark.parametrize(
+    ("expected_res", "is_efi", "subproc"),
+    (
+        (False, False, (_SEC_STDOUT_ENABLED, 0)),
+        (False, False, (_SEC_STDOUT_DISABLED, 0)),
+        (False, False, ("", 1)),
+        (False, True, ("", 1)),
+        (False, True, (_SEC_STDOUT_ENABLED, 1)),  # seems to be invalid case, but..
+        (False, True, (_SEC_STDOUT_DISABLED, 0)),
+        (False, True, None),
+        (True, True, (_SEC_STDOUT_ENABLED, 0)),
+    ),
+)
 def test_is_secure_boot(monkeypatch, expected_res, is_efi, subproc):
     def mocked_subproc(dummyCMD, print_output=False):
         if subproc is None:
@@ -64,26 +68,32 @@ def test_is_secure_boot(monkeypatch, expected_res, is_efi, subproc):
     assert res == expected_res
 
 
-@pytest.mark.parametrize("canonical_path", (
-    "",
-    "/boot/efii/EFI/something.efi",
-    "/boot/grub/something.efi",
-    "EFI/path/grubx.efi",
-    "/boot/EFI/EFI/something.efi",
-    "/boot/efi",
-))
+@pytest.mark.parametrize(
+    "canonical_path",
+    (
+        "",
+        "/boot/efii/EFI/something.efi",
+        "/boot/grub/something.efi",
+        "EFI/path/grubx.efi",
+        "/boot/EFI/EFI/something.efi",
+        "/boot/efi",
+    ),
+)
 def test_canonical_path_to_efi_format_err(canonical_path):
     with pytest.raises(ValueError):
         grub.canonical_path_to_efi_format(canonical_path)
 
 
-@pytest.mark.parametrize(("canonical_path", "efi_path"), (
-    ("/boot/efi/EFI/centos/shimx64.efi", "\\EFI\\centos\\shimx64.efi"),
-    ("/boot/efi/EFI/redhat/shimx64.efi", "\\EFI\\redhat\\shimx64.efi"),
-    ("/boot/efi/EFI/shimx64.efi", "\\EFI\\shimx64.efi"),
-    ("/boot/efi/EFI/another/path/something.efi", "\\EFI\\another\\path\\something.efi"),
-    ("/boot/efi/EFI/centos/efibin", "\\EFI\\centos\\efibin"),
-))
+@pytest.mark.parametrize(
+    ("canonical_path", "efi_path"),
+    (
+        ("/boot/efi/EFI/centos/shimx64.efi", "\\EFI\\centos\\shimx64.efi"),
+        ("/boot/efi/EFI/redhat/shimx64.efi", "\\EFI\\redhat\\shimx64.efi"),
+        ("/boot/efi/EFI/shimx64.efi", "\\EFI\\shimx64.efi"),
+        ("/boot/efi/EFI/another/path/something.efi", "\\EFI\\another\\path\\something.efi"),
+        ("/boot/efi/EFI/centos/efibin", "\\EFI\\centos\\efibin"),
+    ),
+)
 def test_canonical_path_to_efi_format(canonical_path, efi_path):
     assert grub.canonical_path_to_efi_format(canonical_path) == efi_path
 
@@ -97,7 +107,8 @@ def test_canonical_path_to_efi_format(canonical_path, efi_path):
 # TODO(pstodulk): EFIBootLoader
 # TODO(pstodulk): EFIBootInfo
 # TODO(pstodulk): _copy_grub_files
-# TODO(pstodulk): _create_new_entry
+# TODO(egustavs): _check_rhel_boot_entry
+# TODO(pstodulk): _create_rhel_boot_entry
 # TODO(pstodulk): _remove_current_boot_entry
 # TODO(pstodulk): _remove_efi_centos
 # TODO(pstodulk): post_ponr_set_efi_configuration
