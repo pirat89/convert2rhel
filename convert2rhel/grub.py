@@ -36,7 +36,7 @@ RHEL_EFIDIR_CANONICAL_PATH = os.path.join(EFI_MOUNTPOINT, "EFI/redhat/")
 
 # TODO(pstodulk): following constants are valid only for x86_64 arch
 DEFAULT_INSTALLED_EFIBIN_FILENAMES = ("shimx64.efi", "grubx64.efi")
-"""Filenames of the EFI binary files that could be by default instaled on the system.
+"""Filenames of the EFI binary files that could be installed by default on the system.
 
 Sorted by the recommended preferences. The first one is most preferred, but it
 is provided by the shim rpm which does not have to be installed on the system.
@@ -80,6 +80,7 @@ def is_efi():
 
 def is_secure_boot():
     """Return True if the secure boot is enabled."""
+    # Secure boot is only applicable to EFI
     if not is_efi():
         return False
     try:
@@ -152,7 +153,7 @@ def _get_blk_device(device):
     Raise the BootloaderError when cannot get the block device.
     """
     if not device:
-        raise ValueError("The device must be speficied.")
+        raise ValueError("The device must be specified.")
     stdout, ecode = utils.run_subprocess("lsblk -spnlo name %s" % device, print_output=False)
     if ecode:
         logger.error("Cannot get the block device for '%s'." % device)
@@ -375,13 +376,12 @@ def _copy_grub_files():
     # a different name for the possibility of the different grub content...
     # E.g. if  the efibin is located in different directory, are these two files
     # valid???
-    logger.info("Copy the GRUB2 configuration files to the new EFI directory.")
-    src_efidir = CENTOS_EFIDIR_CANONICAL_PATH
+    logger.info("Copying GRUB2 configuration files to the new EFI directory.")
     flag_ok = True
     required_files = ["grubenv", "grub.cfg"]
     all_files = required_files + ["user.cfg"]
     for filename in all_files:
-        src_path = os.path.join(src_efidir, filename)
+        src_path = os.path.join(CENTOS_EFIDIR_CANONICAL_PATH, filename)
         dst_path = os.path.join(RHEL_EFIDIR_CANONICAL_PATH, filename)
         if os.path.exists(dst_path):
             logger.info("The %s file already exists. Copying skipped." % dst_path)
@@ -396,7 +396,6 @@ def _copy_grub_files():
         try:
             shutil.copy2(src_path, dst_path)
         except IOError as err:
-            # FIXME: same as fixme above
             logger.error("I/O error(%s): %s" % (err.errno, err.strerror))
             flag_ok = False
     return flag_ok
@@ -482,7 +481,9 @@ def _remove_current_boot_entry(efibootinfo_orig):
     # unless someone changes the code in future providing a bug
     orig_boot = efibootinfo_new.entries.get(efibootinfo_orig.current_boot, None)
     if not orig_boot:
-        logger.warning("The original default EFI bootloader entry has been removed already.")
+        logger.warning(
+            "The original default EFI bootloader entry %s has been removed already." % efibootinfo_orig.current_boot
+        )
         return
     if (
         orig_boot.boot_number in efibootinfo_orig.entries
@@ -574,19 +575,19 @@ def post_ponr_set_efi_configuration():
     Nothing happens on BIOS.
     """
     if not is_efi():
-        logger.info("The BIOS detected. Nothing to do.")
+        logger.info("BIOS detected. Nothing to do.")
         return
 
     new_default_efibin = None
     for filename in DEFAULT_INSTALLED_EFIBIN_FILENAMES:
         efi_path = os.path.join(RHEL_EFIDIR_CANONICAL_PATH, filename)
         if os.path.exists(efi_path):
-            logger.info("The new expected EFI binary found: %s" % efi_path)
+            logger.info("EFI binary found: %s" % efi_path)
             new_default_efibin = efi_path
             break
-        logger.debug("The %s EFI binary not found. Check the next..." % efi_path)
+        logger.debug("EFI binary %s not found. Checking next possibility..." % efi_path)
     if not new_default_efibin:
-        _log_critical_error("Any of expected RHEL EFI binaries do not exist.")
+        _log_critical_error("None of expected RHEL EFI binaries exist.")
     if not os.path.exists("/usr/sbin/efibootmgr"):
         _log_critical_error("The /usr/sbin/efibootmgr utility is not installed.")
 
