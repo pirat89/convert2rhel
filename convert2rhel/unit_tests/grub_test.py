@@ -98,13 +98,38 @@ def test_canonical_path_to_efi_format(canonical_path, efi_path):
     assert grub.canonical_path_to_efi_format(canonical_path) == efi_path
 
 
-# TODO(pstodulk): _get_partition
+@pytest.mark.parametrize(
+    ("expected_res", "directory", "exception", "subproc"),
+    (
+        ("foo", "/boot", False, (" foo ", 0)),
+        (None, "/bar", True, (None, 0)),
+        (None, "/baz", True, (" foo ", 1)),
+        (None, "/bez", True, (None, 1)),
+    ),
+)
+def test__get_partition(monkeypatch, caplog, expected_res, directory, exception, subproc):
+    monkeypatch.setattr(utils, "run_subprocess", mock.Mock(return_value=subproc))
+
+    if exception:
+        with pytest.raises(grub.BootloaderError):
+            res = grub._get_partition(directory)
+        assert "grub2-probe ended with non-zero exit code.\n%s" % subproc[0] in caplog.records[-1].message
+    else:
+        res = grub._get_partition(directory)
+        assert "grub2-probe ended with non-zero exit code.\n%s" % subproc[0] not in caplog.records[-1].message
+    assert res == expected_res
+    utils.run_subprocess.assert_called_once_with(
+        "/usr/sbin/grub2-probe --target=device %s" % directory, print_output=False
+    )
+
+
 # TODO(pstodulk): _get_blk_device
 # TODO(pstodulk): _get_device_number
 # TODO(pstodulk): get_boot_partition
 # TODO(pstodulk): get_grub_device
 # TODO(pstodulk): get_efi_partition
 # TODO(pstodulk): EFIBootLoader
+
 # TODO(pstodulk): EFIBootInfo
 # TODO(pstodulk): _copy_grub_files
 # TODO(egustavs): _check_rhel_boot_entry
